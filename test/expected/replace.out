@@ -1,0 +1,14 @@
+client context: ok
+old context: ok
+a connection from the old context:
+  handshake: ok
+  it has the old certificate: ok
+new context: ok
+the old context freed; a connection from the new one:
+  handshake: ok
+  it has the new certificate: ok
+the first connection:
+  still has the old certificate: ok
+  echoes a request: ok
+  and a response: ok
+the second connection echoes too: ok

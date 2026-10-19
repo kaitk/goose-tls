@@ -13,6 +13,7 @@
 #define TLS_FAILED -3
 #define TLS_PENDING -4
 #define TLS_UPDATE_TX -5
+#define TLS_HELLO -6
 
 /* The directions in_kernel reports. */
 #define KTLS_RX 1

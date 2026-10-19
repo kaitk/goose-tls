@@ -1,0 +1,30 @@
+default context: ok
+choose_context: ok
+other.test context: ok
+acme.test challenge context: ok
+localhost offering 1 protocol(s):
+  client context: ok
+  server: HELLO, server_name 'localhost', offers acme-tls/1 false, http/1.1 true
+  after: server done, client done, server alpn 'http/1.1'
+  the client got the trusted certificate: ok
+  data flows: ok
+other.test offering 1 protocol(s):
+  client context: ok
+  server: HELLO, server_name 'other.test', offers acme-tls/1 false, http/1.1 true
+  use_context(other): ok
+  after: server done, client done, server alpn 'http/1.1'
+  the client got the trusted certificate: ok
+  data flows: ok
+acme.test offering 1 protocol(s):
+  client context: ok
+  server: HELLO, server_name 'acme.test', offers acme-tls/1 false, http/1.1 true
+  after: server WANT_INPUT, client FAILED, server alpn 'http/1.1'
+  client: certificate verify failed: hostname mismatch
+acme.test offering 1 protocol(s):
+  client context: ok
+  server: HELLO, server_name 'acme.test', offers acme-tls/1 true, http/1.1 false
+  use_context(acme): ok
+  after: server WANT_INPUT, client FAILED, server alpn 'acme-tls/1'
+  client: certificate verify failed: unhandled critical extension
+use_context before the ClientHello fails: ok
+a context without choose_context: server done, server_name 'localhost', offered 0 bytes

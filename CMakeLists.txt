@@ -6,7 +6,7 @@ project(goose_tls C)
 
 include(${CMAKE_CURRENT_LIST_DIR}/cmake/openssl.cmake)
 
-add_library(goose_tls STATIC shim/tls.c shim/ktls.c)
+add_library(goose_tls STATIC shim/tls.c shim/ktls.c shim/crypto.c)
 # The shim uses the OpenSSL 3.0 API and nothing it deprecates, which OpenSSL
 # 3.x and 4.x both provide.
 target_compile_definitions(goose_tls PRIVATE OPENSSL_API_COMPAT=30000 OPENSSL_NO_DEPRECATED)

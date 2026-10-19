@@ -1,0 +1,21 @@
+sha256 of "abc": ok
+sha256 of "": ok
+key_generate: ok
+key_pem is PKCS#8: ok
+public_xy bytes: 64
+key_from_pem of key_pem: ok
+  the same key: ok
+key_from_pem of an RSA key fails: ok
+  unsupported private key algorithm: not an EC P-256 key
+key_from_pem of text that isn't PEM fails: ok
+sign_es256 bytes: 64
+  a fresh nonce each time: ok
+csr is DER, a SEQUENCE: ok
+csr of no names fails: ok
+csr of an empty name fails: ok
+self_signed is PEM: ok
+  a server context takes it and key_pem: ok
+self_signed for 0 days fails: ok
+challenge_certificate is PEM: ok
+  a server context takes it: ok
+challenge_certificate for a 256-byte name fails: ok

@@ -1,0 +1,19 @@
+server context: ok
+a client trusting the server's certificate: ok
+localhost: connect: ok
+  done: TLSv1.3 TLS_AES_128_GCM_SHA256, alpn 'http/1.1'
+127.0.0.1: connect: ok
+  done: TLSv1.3 TLS_AES_128_GCM_SHA256, alpn 'http/1.1'
+another name: connect: ok
+  client FAILED: certificate verify failed: hostname mismatch
+another address: connect: ok
+  client FAILED: certificate verify failed: IP address mismatch
+a client trusting the system's authorities: ok
+a self-signed certificate: connect: ok
+  client FAILED: certificate verify failed: self-signed certificate
+a client trusting no certificates isn't made: ok
+an empty ALPN name is refused: ok
+a host with a NUL is refused: ok
+an empty host is refused: ok
+a client before its handshake: pending 0, handshake WANT_INPUT, a ClientHello to send true
+  fed a ClientHello: handshake FAILED
