@@ -1,13 +1,15 @@
-/* Blocking TCP for the test server only (echo_server.goose): the package
-   itself never reads or writes a socket. POSIX, and recvmsg's and sendmsg's
-   kTLS record types on Linux; returns -errno on failure. */
+/* Blocking TCP for the test programs only (echo_server.goose, client.goose):
+   the package itself never reads or writes a socket. POSIX, and recvmsg's and
+   sendmsg's kTLS record types on Linux; returns -errno on failure. */
 #include <errno.h>
 #ifdef __linux__
 #include <linux/tls.h>
 #endif
+#include <netdb.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -43,6 +45,41 @@ int64_t net_accept(int64_t lfd) {
     int fd;
     do fd = accept((int)lfd, NULL, NULL); while (fd < 0 && errno == EINTR);
     if (fd < 0) return -errno;
+    struct timeval tv = { 10, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    return fd;
+}
+
+/* A connection to host's port, the first of its addresses that answers, with
+   the same receive timeout; -errno, or -EHOSTUNREACH when the name doesn't
+   resolve. */
+int64_t net_connect(net_bytes host, int32_t port) {
+    signal(SIGPIPE, SIG_IGN);
+    char name[256], service[16];
+    if (host.len <= 0 || host.len >= (int64_t)sizeof name) return -EINVAL;
+    memcpy(name, host.data, (size_t)host.len);
+    name[host.len] = 0;
+    snprintf(service, sizeof service, "%d", (int)port);
+    struct addrinfo hints, *list = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (getaddrinfo(name, service, &hints, &list) != 0) return -EHOSTUNREACH;
+    int fd = -1, e = EHOSTUNREACH;
+    for (struct addrinfo *a = list; a && fd < 0; a = a->ai_next) {
+        fd = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (fd < 0) {
+            e = errno;
+            continue;
+        }
+        if (connect(fd, a->ai_addr, a->ai_addrlen) < 0) {
+            e = errno;
+            close(fd);
+            fd = -1;
+        }
+    }
+    freeaddrinfo(list);
+    if (fd < 0) return -e;
     struct timeval tv = { 10, 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     return fd;

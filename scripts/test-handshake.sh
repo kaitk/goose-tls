@@ -5,14 +5,20 @@
 # scripts/validate.sh, tls_posture_probe and tls_quality_probe, at 2d85137):
 # the served certificate is the one given, TLS 1.3 with one of its three
 # suites, no ALPN protocol the client didn't offer, and no obsolete protocol
-# or weak cipher accepted. Then a KeyUpdate from s_client each way, and the
-# same over kTLS where the kernel has it (the server's kernel option); where
-# it hasn't, that the server falls back to user space.
+# or weak cipher accepted. Then a context chosen per connection from the SNI
+# name and ALPN offer, with TLS-ALPN-01's challenge certificate (the server's
+# choose option); the package's client (test/tools/client.goose) against a
+# public HTTPS server and against the test server's self-signed certificate;
+# a KeyUpdate from s_client each way; and the same over kTLS where the kernel
+# has it (the server's kernel option); where it hasn't, that the server falls
+# back to user space.
 #
 # The certificate is a self-signed RSA-2048 pair made for the run, as
 # HttpArena mounts one. PORT (default 8081, HttpArena's HTTP/1.1 TLS port)
 # is where the server listens; GOOSE names the compiler, CC the C compiler,
-# OPENSSL the openssl command, and CURL the curl command.
+# OPENSSL the openssl command, and CURL the curl command. HTTPS_HOST (default
+# example.com) is the public server the client checks against, on port 443;
+# HTTPS_HOST=none skips that check, on a machine without the internet.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -38,9 +44,11 @@ limit() {
     perl -e 'alarm shift; exec @ARGV or die "$ARGV[0]: $!\n"' "$s" "$@"
 }
 
-echo "== build test/tools/echo_server.goose"
-"$GOOSE" build ${CC:+--cc "$CC"} -o "$work/echo_server" "$root/test/tools/echo_server.goose" |
-    grep -v '^parsed\|^typechecked\|^bce\|^wrote' || :
+for tool in echo_server client; do
+    echo "== build test/tools/$tool.goose"
+    "$GOOSE" build ${CC:+--cc "$CC"} -o "$work/$tool" "$root/test/tools/$tool.goose" |
+        grep -v '^parsed\|^typechecked\|^bce\|^wrote' || :
+done
 "$openssl" req -x509 -newkey rsa:2048 -nodes -keyout "$work/server.key" -out "$work/server.crt" \
     -days 1 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" 2>/dev/null
 echo "client: $("$openssl" version)"
@@ -86,7 +94,9 @@ logged() {
 s_client() {
     input=$1
     shift
-    printf '%b' "$input" | limit 10 "$openssl" s_client -connect "127.0.0.1:$port" -servername localhost "$@" 2>&1 || :
+    # SNI localhost, unless the options name another.
+    case " $* " in *" -servername "*) ;; *) set -- -servername localhost "$@" ;; esac
+    printf '%b' "$input" | limit 10 "$openssl" s_client -connect "127.0.0.1:$port" "$@" 2>&1 || :
 }
 # The same, sending $1 and, a second later, "bye", which ends the connection. The
 # server asks for the kernel once it has answered what came with the handshake, so a
@@ -195,6 +205,78 @@ else
     fail "accepts${old}${weak}"
 fi
 [ -z "$untested" ] || echo "  NOTE this openssl can't offer$untested, so those weren't probed"
+
+echo
+echo "== A context per connection, from SNI and ALPN"
+start echo choose
+# The subject and ALPN protocol a connection with these s_client options gets.
+served() {
+    out=$(s_client '' "$@")
+    subject=$(printf '%s\n' "$out" | "$openssl" x509 -noout -subject 2>/dev/null | sed 's/.*CN *= *//' || :)
+    proto=$(printf '%s\n' "$out" | grep -m1 -E '^(ALPN protocol|No ALPN)' | sed 's/ALPN protocol: //' || :)
+    echo "$subject, $proto"
+}
+check_served() {
+    want=$1
+    shift
+    got=$(served "$@")
+    [ "$got" = "$want" ] && pass "$*: $got" || fail "$*: $got, not $want"
+}
+check_served "localhost, No ALPN negotiated" -servername localhost
+check_served "localhost, http/1.1" -servername localhost -alpn http/1.1
+check_served "localhost, No ALPN negotiated" -servername localhost -alpn acme-tls/1
+check_served "other.test, http/1.1" -servername other.test -alpn http/1.1
+check_served "localhost, http/1.1" -servername acme.test -alpn http/1.1
+check_served "acme.test, acme-tls/1" -servername acme.test -alpn acme-tls/1
+logged "^hello: server_name 'acme.test', acme-tls/1 true, context acme$" &&
+    pass "the server saw acme.test and acme-tls/1 at the ClientHello" || fail "the server's log: $(cat "$log")"
+# RFC 8737, section 3: one dNSName, and a critical acmeIdentifier extension
+# whose value is an OCTET STRING of the key authorization's SHA-256.
+s_client '' -servername acme.test -alpn acme-tls/1 | "$openssl" x509 -outform PEM >"$work/challenge.crt" 2>/dev/null || :
+text=$("$openssl" x509 -in "$work/challenge.crt" -noout -text 2>/dev/null || :)
+printf '%s\n' "$text" | grep -q '1\.3\.6\.1\.5\.5\.7\.1\.31: critical' &&
+    pass "x509 -text: the challenge certificate's acmeIdentifier is critical" ||
+    fail "no critical acmeIdentifier: $text"
+sans=$(printf '%s\n' "$text" | grep -A1 'Subject Alternative Name' | tail -1 | tr -d ' ')
+[ "$sans" = "DNS:acme.test" ] && pass "x509 -text: its only name is $sans" || fail "its names: $sans"
+want=$(printf 'token.thumbprint' | "$openssl" dgst -sha256 -r | cut -d' ' -f1)
+got=$("$openssl" asn1parse -in "$work/challenge.crt" 2>/dev/null |
+    grep -A2 ':id-pe-acmeIdentifier\|:1\.3\.6\.1\.5\.5\.7\.1\.31' | grep -o '\[HEX DUMP\]:.*' | sed 's/.*://' |
+    tr 'A-F' 'a-f' || :)
+[ "$got" = "0420$want" ] && pass "its acmeIdentifier holds the key authorization's SHA-256" ||
+    fail "its acmeIdentifier is ${got:-missing}, not 0420$want"
+out=$(s_client 'hello, other\nbye\n' -servername other.test -ign_eof)
+printf '%s\n' "$out" | grep -q '^hello, other$' && pass "other.test's connection echoes" ||
+    fail "other.test's echo: $out"
+
+echo
+echo "== The package's client"
+start http
+if [ "${HTTPS_HOST:-example.com}" = none ]; then
+    echo "  NOTE HTTPS_HOST=none: no public server checked"
+else
+    host=${HTTPS_HOST:-example.com}
+    out=$(limit 20 "$work/client" "$host" 443 2>&1 || :)
+    if printf '%s\n' "$out" | grep -q '^handshake: TLSv1.3' && printf '%s\n' "$out" | grep -q '^response: HTTP/1.1 '; then
+        pass "$host: a verified handshake and $(printf '%s\n' "$out" | grep '^response:' | sed 's/response: //')"
+    else
+        fail "$host: $out"
+    fi
+fi
+out=$(limit 10 "$work/client" localhost "$port" 2>&1 || :)
+case $out in
+*"certificate verify failed"*"self-signed certificate"* | *"certificate verify failed"*"self signed certificate"*)
+    pass "the system's authorities: the self-signed server is refused" ;;
+*) fail "the self-signed server: $out" ;;
+esac
+out=$(limit 10 "$work/client" localhost "$port" "$work/server.crt" 2>&1 || :)
+printf '%s\n' "$out" | grep -q '^response: HTTP/1.1 200 OK' &&
+    pass "trusting its certificate: $(printf '%s\n' "$out" | head -1)" || fail "trusting its certificate: $out"
+out=$(limit 10 "$work/client" 127.0.0.1 "$port" "$work/server.crt" 2>&1 || :)
+case $out in
+*"IP address mismatch"*) pass "127.0.0.1, which the certificate doesn't name, is refused" ;;
+*) fail "127.0.0.1: $out" ;;
+esac
 
 # s_client takes a line "K" as a KeyUpdate that asks for one back, and "k" as
 # one that doesn't, only when the line comes in a read of its own, so the

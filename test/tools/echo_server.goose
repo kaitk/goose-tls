@@ -1,7 +1,7 @@
 // A TLS server for the handshake tests (scripts/test-handshake.sh), one
 // connection at a time over blocking sockets of its own (net.c).
 //
-//   echo_server PORT CERT KEY echo|http [kernel]
+//   echo_server PORT CERT KEY echo|http [kernel|choose]
 //
 // echo sends back every byte it reads, and closes with close_notify after a
 // line "bye". http answers each HTTP/1.1 request: a POST with its body, any
@@ -12,9 +12,22 @@
 // With kernel, it moves each connection to kTLS after the handshake where the
 // kernel has it, and prints which directions the kernel took and each record
 // that isn't data; elsewhere it serves from user space, as without.
+//
+// With choose, it picks each connection's context at the ClientHello, as an
+// ACME client's TLS-ALPN-01 does: a client that sends acme.test in SNI and
+// offers acme-tls/1 gets a challenge certificate for acme.test, whose
+// acmeIdentifier is the SHA-256 of KEY_AUTHORIZATION, and ALPN acme-tls/1; one
+// that sends other.test gets a self-signed certificate for other.test; every
+// other gets CERT. It prints each choice.
 import std;
 import os;
 import tls from "../../";
+
+let KEY_AUTHORIZATION = "token.thumbprint";
+
+// The contexts choose picks from.
+var other = tls::Context { .. };
+var acme = tls::Context { .. };
 
 extern fn net_listen(port: i32, any: bool) -> i64;
 extern fn net_accept(fd: i64) -> i64;
@@ -150,6 +163,22 @@ fn serve_kernel(c: tls::Conn, fd: i64, http: bool, tx: bool, req: u8[>..]&) {
     }
 }
 
+// Moves a connection paused at its ClientHello to the context its SNI name
+// and ALPN offer pick.
+fn choose(c: tls::Conn) {
+    let name = tls::server_name(c);
+    let acme_tls = tls::offers(c, "acme-tls/1");
+    var picked = "default";
+    if name == "acme.test" && acme_tls {
+        picked = "acme";
+        tls::use_context(c, acme);
+    } else if name == "other.test" {
+        picked = "other";
+        tls::use_context(c, other);
+    }
+    print("hello: server_name '", name, "', acme-tls/1 ", acme_tls, ", context ", picked);
+}
+
 fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
     let c = tls::accept(ctx);
     guard tls::ok(c) else { print("accept failed: ", tls::error_text()); return; }
@@ -169,7 +198,11 @@ fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
         want = buf.len;
         tls::feed(c, buf[..n]);
         if !shaken {
-            let h = tls::handshake(c);
+            var h = tls::handshake(c);
+            if h == tls::HELLO {
+                choose(c);
+                h = tls::handshake(c);
+            }
             if h == tls::FAILED {
                 print("handshake failed: ", tls::error_text());
                 done = true;
@@ -217,7 +250,7 @@ fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
 }
 
 fn main() {
-    let usage = "usage: echo_server PORT CERT KEY echo|http [kernel]";
+    let usage = "usage: echo_server PORT CERT KEY echo|http [kernel|choose]";
     guard arg_count() == 5 || arg_count() == 6 else {
         print(usage);
         exit(2);
@@ -233,7 +266,7 @@ fn main() {
     arg(4, mode);
     var opt: u8[>..] = [];
     if arg_count() == 6 { arg(5, opt); }
-    guard pok && (mode == "echo" || mode == "http") && (opt == "" || opt == "kernel") else {
+    guard pok && (mode == "echo" || mode == "http") && (opt == "" || opt == "kernel" || opt == "choose") else {
         print(usage);
         exit(2);
     }
@@ -249,6 +282,20 @@ fn main() {
         // Where the kernel has none, connections still try, to check that
         // to_kernel leaves them in user space.
         if !yes { kernel_enable(ctx.id, true); }
+    }
+    if opt == "choose" {
+        let k = tls::key_generate();
+        let pem = tls::key_pem(k);
+        var ook = false;
+        var aok = false;
+        other, ook = tls::server(tls::self_signed(k, ["other.test"], 1), pem, ["http/1.1"]);
+        acme, aok = tls::server(tls::challenge_certificate(k, "acme.test", KEY_AUTHORIZATION), pem,
+                                ["acme-tls/1"]);
+        tls::free(k);
+        guard ook && aok && tls::choose_context(ctx) else {
+            print("no contexts to choose from: ", tls::error_text());
+            exit(1);
+        }
     }
     let lfd = net_listen(port as i32, false);
     guard lfd >= 0 else {

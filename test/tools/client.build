@@ -1,0 +1,3 @@
+// The test client's sockets: the package does no I/O, so the client brings its
+// own, for POSIX only.
+c_sources = ["net.c"];
