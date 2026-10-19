@@ -56,14 +56,23 @@ fn main() {
     check::that("default context", dok);
     check::that("choose_context", tls::choose_context(dctx));
 
-    let ok_key = tls::key_generate();
-    let other_crt = tls::self_signed(ok_key, ["other.test"], 1);
-    let octx, ook = tls::server(other_crt, tls::key_pem(ok_key), ["http/1.1"]);
+    var other_crt: u8[>..] = [];
+    var other_pem: u8[>..] = [];
+    var acme_crt: u8[>..] = [];
+    var acme_pem: u8[>..] = [];
+    check::run() {
+        let k = tls::key_generate(tls::P256);
+        other_crt = tls::self_signed(k, ["other.test"], 1);
+        other_pem = tls::key_pem(k);
+        tls::free(k);
+        let a = tls::key_generate(tls::P256);
+        acme_crt = tls::challenge_certificate(a, "acme.test", check::DIGEST);
+        acme_pem = tls::key_pem(a);
+        tls::free(a);
+    };
+    let octx, ook = tls::server(other_crt, other_pem, ["http/1.1"]);
     check::that("other.test context", ook);
-
-    let acme_key = tls::key_generate();
-    let acme_crt = tls::challenge_certificate(acme_key, "acme.test", "token.thumbprint");
-    let actx, aok = tls::server(acme_crt, tls::key_pem(acme_key), ["acme-tls/1"]);
+    let actx, aok = tls::server(acme_crt, acme_pem, ["acme-tls/1"]);
     check::that("acme.test challenge context", aok);
 
     let ctxs = Contexts { default: dctx, other: octx, acme: actx };
@@ -87,13 +96,11 @@ fn main() {
     var cs = 0;
     let ss = check::handshake(c2, s2, cs);
     print("a context without choose_context: server ", check::status(ss), ", server_name '",
-          tls::server_name(s2), "', offered ", tls::offered(s2).len, " bytes");
+          tls::server_name(s2), "', protocols_offered ", tls::protocols_offered(s2).len, " bytes");
     tls::free(c2);
     tls::free(s2);
     tls::free(cctx);
     tls::free(plain);
-    tls::free(ok_key);
-    tls::free(acme_key);
     tls::free(octx);
     tls::free(actx);
     tls::free(dctx);

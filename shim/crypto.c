@@ -1,6 +1,6 @@
 /* The keys, signatures, and certificates an ACME client needs, so that it
    needs no C of its own (docs/architecture.md, "Keys and certificates"): an
-   EC P-256 key, ES256 signatures in JWS's form, SHA-256, a CSR, and a
+   EC P-256 key, ES256 signatures in JWS's form, a CSR, and a
    self-signed certificate, with RFC 8737's acmeIdentifier extension for
    TLS-ALPN-01. Written against OpenSSL 3.0's API with nothing deprecated, as
    tls.c is.
@@ -121,14 +121,6 @@ uint8_t tls_sign_es256(int64_t h, tls_bytes data, gs_rref out) {
     ECDSA_SIG_free(sig);
     EVP_MD_CTX_free(md);
     return (uint8_t)ok;
-}
-
-/* SHA-256 of data: its 32 bytes. */
-void tls_sha256(tls_bytes data, gs_rref out) {
-    unsigned char d[32];
-    unsigned int n = 0;
-    if (data.len >= 0 && EVP_Digest(data.data, (size_t)data.len, d, &n, EVP_sha256(), NULL) == 1)
-        gs_bld_append(out, d, n);
 }
 
 /* The names, each a DNS name in a subjectAltName extension; NULL when the

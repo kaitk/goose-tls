@@ -19,8 +19,14 @@ fn open(cctx: tls::Context, sctx: tls::Context, c: tls::Conn&, s: tls::Conn&) {
 }
 
 fn main() {
-    let key = tls::key_generate();
-    let new_crt = tls::self_signed(key, ["localhost"], 1);
+    var new_crt: u8[>..] = [];
+    var new_key: u8[>..] = [];
+    check::run() {
+        let k = tls::key_generate(tls::P256);
+        new_crt = tls::self_signed(k, ["localhost"], 1);
+        new_key = tls::key_pem(k);
+        tls::free(k);
+    };
     var both: u8[>..] = [];
     both.append(CRT);
     both.append(new_crt);
@@ -35,7 +41,7 @@ fn main() {
     open(cctx, old, c1, s1);
     check::that("  it has the old certificate", tls::peer_certificate(c1) == CRT);
 
-    let new, nok = tls::server(new_crt, tls::key_pem(key), ["http/1.1"]);
+    let new, nok = tls::server(new_crt, new_key,["http/1.1"]);
     check::that("new context", nok);
     tls::free(old);
     print("the old context freed; a connection from the new one:");
@@ -56,5 +62,4 @@ fn main() {
     tls::free(s2);
     tls::free(new);
     tls::free(cctx);
-    tls::free(key);
 }

@@ -7,11 +7,12 @@
 // key.pem (key_pem), xy.bin (public_xy), data.txt and sig.der (sign_es256 of
 // it, its r || s put in DER for openssl), csr.der (a CSR for example.test and
 // www.example.test), cert.pem (self_signed for the same names, 30 days), and
-// challenge.pem (challenge_certificate for example.test, whose key
-// authorization is "token.thumbprint").
+// challenge.pem (challenge_certificate for example.test, with check::DIGEST,
+// the SHA-256 of the key authorization "token.thumbprint").
 import std;
 import os;
 import tls from "../../";
+import check from "../";
 
 // An ASN.1 INTEGER of a 32-byte big-endian unsigned value: no leading zero
 // bytes, but one where the top bit is set, so it stays positive.
@@ -39,7 +40,6 @@ fn der_signature(rs: const u8[:]) -> u8[>..] {
 }
 
 fn put(dir: const u8[:], name: const u8[:], data: const u8[:]) {
-    guard data.len > 0 else { print("empty: ", name, ": ", tls::error_text()); exit(1); }
     guard write_file(str(dir, "/", name), data) else { print("cannot write ", dir, "/", name); exit(1); }
 }
 
@@ -50,28 +50,28 @@ fn main() {
     }
     var dir: u8[>..] = [];
     arg(1, dir);
-    var k = tls::Key { .. };
+    var pem: u8[>..] = [];
     if arg_count() == 3 {
         var path: u8[>..] = [];
         arg(2, path);
-        var pem: u8[>..] = [];
         guard read_file(path, pem) else { print("cannot read ", path); exit(2); }
-        k = tls::key_from_pem(pem);
-    } else {
-        k = tls::key_generate();
     }
-    guard tls::ok(k) else { print("no key: ", tls::error_text()); exit(1); }
-
-    put(dir, "key.pem", tls::key_pem(k));
-    put(dir, "xy.bin", tls::public_xy(k));
-    let data = "eyJhbGciOiJFUzI1NiJ9.eyJ0ZXJtc09mU2VydmljZUFncmVlZCI6dHJ1ZX0";
-    put(dir, "data.txt", data);
-    let sig = tls::sign_es256(k, data);
-    guard sig.len == 64 else { print("sign_es256 gave ", sig.len, " bytes"); exit(1); }
-    put(dir, "sig.der", der_signature(sig));
-    put(dir, "csr.der", tls::csr(k, ["example.test", "www.example.test"]));
-    put(dir, "cert.pem", tls::self_signed(k, ["example.test", "www.example.test"], 30));
-    put(dir, "challenge.pem", tls::challenge_certificate(k, "example.test", "token.thumbprint"));
-    tls::free(k);
+    let failed = tls::run() {
+        var k = tls::Key { .. };
+        if pem.len > 0 { k = tls::key_from_pem(pem); } else { k = tls::key_generate(tls::P256); }
+        put(dir, "key.pem", tls::key_pem(k));
+        put(dir, "xy.bin", tls::public_xy(k));
+        let data = "eyJhbGciOiJFUzI1NiJ9.eyJ0ZXJtc09mU2VydmljZUFncmVlZCI6dHJ1ZX0";
+        put(dir, "data.txt", data);
+        put(dir, "sig.der", der_signature(tls::sign_es256(k, data)));
+        put(dir, "csr.der", tls::csr(k, ["example.test", "www.example.test"]));
+        put(dir, "cert.pem", tls::self_signed(k, ["example.test", "www.example.test"], 30));
+        put(dir, "challenge.pem", tls::challenge_certificate(k, "example.test", check::DIGEST));
+        tls::free(k);
+    };
+    for e in failed {
+        print("failed: ", e.message);
+        exit(1);
+    }
     print("wrote ", dir);
 }

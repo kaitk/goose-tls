@@ -1,21 +1,19 @@
-sha256 of "abc": ok
-sha256 of "": ok
-key_generate: ok
 key_pem is PKCS#8: ok
 public_xy bytes: 64
-key_from_pem of key_pem: ok
-  the same key: ok
-key_from_pem of an RSA key fails: ok
-  unsupported private key algorithm: not an EC P-256 key
-key_from_pem of text that isn't PEM fails: ok
+key_from_pem of key_pem is the same key: ok
 sign_es256 bytes: 64
   a fresh nonce each time: ok
 csr is DER, a SEQUENCE: ok
-csr of no names fails: ok
-csr of an empty name fails: ok
 self_signed is PEM: ok
   a server context takes it and key_pem: ok
-self_signed for 0 days fails: ok
 challenge_certificate is PEM: ok
   a server context takes it: ok
-challenge_certificate for a 256-byte name fails: ok
+key_from_pem of an RSA key fails: key_from_pem, with OpenSSL's 'not an EC P-256 key' true
+key_from_pem of text that isn't PEM fails: key_from_pem
+key_generate on another curve fails: key_generate: the curve must be P-256, not P-384
+csr of no names fails: csr: names must be 1 to 255 bytes, and at least one
+csr of an empty name fails: csr: names must be 1 to 255 bytes, and at least one
+self_signed for 0 days fails: self_signed: days must be 1 to 36500
+challenge_certificate for a 256-byte name fails: challenge_certificate: the name must be 1 to 255 bytes
+challenge_certificate of a 31-byte digest fails: challenge_certificate: the digest must be SHA-256's 32 bytes
+a failed call leaves run at once: ok

@@ -7,6 +7,19 @@ namespace check;
 import std;
 import tls from "../";
 
+// SHA-256 of "token.thumbprint", the key authorization the tests' challenge
+// certificates carry (printf token.thumbprint | openssl dgst -sha256).
+let DIGEST = "\xeb\x5a\xc1\x67\xfe\x24\x9c\x76\xe5\x3b\x43\x0d\xa3\x11\x6c\x5d\x9f\xde\x4c\x55\x07\xba\x6d\x01\xe8\x85\x51\x6e\x1b\xd4\x9f\x92";
+
+// Runs F inside tls::run, and fails the test with the error when a key or
+// certificate call in it fails.
+fn run<F>() {
+    for e in tls::run(F) {
+        print("FAILED: ", e.message);
+        assert(false);
+    }
+}
+
 // Prints "label: ok", or "label: FAILED".
 fn that(label: const u8[:], ok: bool) {
     print(label, if ok { ": ok" } else { ": FAILED" });

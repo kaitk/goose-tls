@@ -113,7 +113,6 @@ extern "tls_key_free" fn key_free_c(id: i64);
 extern "tls_key_pem" fn key_pem_c(id: i64, out: u8[>..]&) -> bool;
 extern "tls_key_public" fn key_public_c(id: i64, out: u8[>..]&) -> bool;
 extern "tls_sign_es256" fn sign_es256_c(id: i64, data: const u8[:], out: u8[>..]&) -> bool;
-extern "tls_sha256" fn sha256_c(data: const u8[:], out: u8[>..]&);
 extern "tls_csr" fn csr_c(id: i64, names: const u8[:], out: u8[>..]&) -> bool;
 extern "tls_self_signed" fn self_signed_c(id: i64, names: const u8[:], days: i64, acme: const u8[:], out: u8[>..]&) -> bool;
 
@@ -219,15 +218,16 @@ fn server_name(c: Conn) -> u8[>..] {
 // The ALPN protocols the client offered, in its wire format: each a length
 // byte and the name, in the client's order. Empty when it offered none, or
 // when the connection's context isn't one choose_context was given.
-fn offered(c: Conn) -> u8[>..] {
+fn protocols_offered(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
     offered_c(c.id, s);
     return s;
 }
 
-// Whether the client offered protocol in ALPN, as offered gives the list.
+// Whether the client offered protocol in ALPN, as protocols_offered gives the
+// list.
 fn offers(c: Conn, protocol: const u8[:]) -> bool {
-    let list = offered(c);
+    let list = protocols_offered(c);
     var i = 0;
     while i < list.len {
         let n = list[i] as i64;
@@ -368,82 +368,128 @@ fn kernel_update_tx(c: Conn, fd: i64) -> i64 { kernel_update_tx_c(c.id, fd) }
 // Keys and certificates for an ACME client, which then needs no C of its own
 // (docs/architecture.md, "Keys and certificates"). names, in csr and
 // self_signed, are DNS names, each 1 to 255 bytes.
+//
+// A call that fails leaves through `return ... from tls::run`, with OpenSSL's
+// reason, so each one runs inside run, or the program doesn't compile:
+//
+//   let failed = tls::run() {
+//       let k = tls::key_generate(tls::P256);
+//       csr = tls::csr(k, ["example.com"]);
+//       tls::free(k);
+//   };
+//   for e in failed { print(e.message); }
+//
+// Each of them has an untyped parameter, so that it is compiled only where a
+// program calls it: a fully typed one is checked as a caller of fail outside
+// run, by `goose check` of this file and by `goose run` of any program that
+// imports it, and rejected (docs/goose-findings.md). ok, free, and the
+// connection calls never leave this way.
 
-// A new EC P-256 key; check ok(k).
-fn key_generate() -> Key { Key { id: key_generate_c() } }
+// The curve key_generate takes: the only one, for ES256.
+let P256 = "P-256";
 
-// An EC P-256 private key from PEM, PKCS#8 or SEC 1's "EC PRIVATE KEY"; check
-// ok(k). Not ok for any other kind of key; error_text says why.
-fn key_from_pem(pem: const u8[:]) -> Key { Key { id: key_from_pem_c(pem) } }
+// Why a key or certificate call failed: OpenSSL's reasons, one a line, as
+// error_text gives them, or the package's own.
+struct Error { message: u8[] }
+
+// Runs F, and returns an empty array when it returned, or the error that a
+// call inside it failed with. F's results are discarded; it writes what it
+// makes into variables of the caller's. The innermost run catches.
+fn run<F>() -> Error[] {
+    F();
+    return [];
+}
+
+// Leaves the innermost run with an Error of message, and OpenSSL's reasons
+// after it when it gave any.
+fn fail(message) {
+    let reasons = error_text();
+    let text: u8[>..] = if reasons.len > 0 { str(message, ": ", trim_end(reasons)) } else { str(message) };
+    return [Error { message: text }] from run;
+}
+
+// A new key on curve, which must be P256, an EC P-256 key.
+fn key_generate(curve) -> Key {
+    if curve != P256 { fail(str("key_generate: the curve must be ", P256, ", not ", curve)); }
+    let id = key_generate_c();
+    if id == 0 { fail("key_generate"); }
+    return Key { id: id };
+}
+
+// An EC P-256 private key from PEM, PKCS#8 or SEC 1's "EC PRIVATE KEY". Fails
+// for any other kind of key, or text that holds none.
+fn key_from_pem(pem) -> Key {
+    let id = key_from_pem_c(pem);
+    if id == 0 { fail("key_from_pem"); }
+    return Key { id: id };
+}
 
 fn ok(k: Key) -> bool { k.id != 0 }
 fn free(k: Key) { key_free_c(k.id); }
 
 // The private key as unencrypted PKCS#8 PEM, which key_from_pem and server
-// read; "" on failure.
-fn key_pem(k: Key) -> u8[>..] {
+// read.
+fn key_pem(k) -> u8[>..] {
     var s: u8[>..] = [];
-    key_pem_c(k.id, s);
+    if !key_pem_c(k.id, s) { fail("key_pem"); }
     return s;
 }
 
 // The public key's coordinates, x then y, 32 bytes each, big-endian: a JWK's
-// "x" and "y" before base64url (RFC 7518, section 6.2.1); "" on failure.
-fn public_xy(k: Key) -> u8[>..] {
+// "x" and "y" before base64url (RFC 7518, section 6.2.1).
+fn public_xy(k) -> u8[>..] {
     var s: u8[>..] = [];
-    key_public_c(k.id, s);
+    if !key_public_c(k.id, s) { fail("public_xy"); }
     return s;
 }
 
 // The ES256 signature of data (RFC 7518, section 3.4): ECDSA with P-256 over
-// SHA-256, as the 64 bytes r || s that JWS takes; "" on failure.
-fn sign_es256(k: Key, data: const u8[:]) -> u8[>..] {
+// SHA-256, as the 64 bytes r || s that JWS takes.
+fn sign_es256(k, data: const u8[:]) -> u8[>..] {
     var s: u8[>..] = [];
-    sign_es256_c(k.id, data, s);
-    return s;
-}
-
-// The 32-byte SHA-256 digest of data: for a JWK thumbprint (RFC 7638), and
-// the key authorization's digest in a challenge certificate.
-fn sha256(data: const u8[:]) -> u8[>..] {
-    var s: u8[>..] = [];
-    sha256_c(data, s);
+    if !sign_es256_c(k.id, data, s) { fail("sign_es256"); }
     return s;
 }
 
 // A certificate signing request for names, signed by k, as DER: what RFC
 // 8555's finalize takes, in base64url. The first name is the subject's common
 // name, when it fits its 64 characters, and every name is in subjectAltName.
-// "" when names is empty or a name is empty or too long.
-fn csr(k: Key, names: const u8[:][:]) -> u8[>..] {
-    var s: u8[>..] = [];
+// Fails when names is empty or a name is empty or too long.
+fn csr(k, names: const u8[:][:]) -> u8[>..] {
     var list: u8[>..] = [];
-    guard names.len > 0 && wire(names, 255, list) else { return s; }
-    csr_c(k.id, list, s);
+    if names.len == 0 || !wire(names, 255, list) { fail("csr: names must be 1 to 255 bytes, and at least one"); }
+    var s: u8[>..] = [];
+    if !csr_c(k.id, list, s) { fail("csr"); }
     return s;
 }
 
 // A self-signed certificate for names and k, as PEM, valid from an hour ago
-// for days days: for a server to start with before ACME gives it one. ""
+// for days days: for a server to start with before ACME gives it one. Fails
 // when names is empty, a name is empty or too long, or days is outside 1 to
 // 36500.
-fn self_signed(k: Key, names: const u8[:][:], days: i64) -> u8[>..] {
-    var s: u8[>..] = [];
+fn self_signed(k, names: const u8[:][:], days: i64) -> u8[>..] {
     var list: u8[>..] = [];
-    guard names.len > 0 && wire(names, 255, list) else { return s; }
-    self_signed_c(k.id, list, days, "", s);
+    if names.len == 0 || !wire(names, 255, list) {
+        fail("self_signed: names must be 1 to 255 bytes, and at least one");
+    }
+    if days < 1 || days > 36500 { fail("self_signed: days must be 1 to 36500"); }
+    var s: u8[>..] = [];
+    if !self_signed_c(k.id, list, days, "", s) { fail("self_signed"); }
     return s;
 }
 
 // TLS-ALPN-01's challenge certificate (RFC 8737, section 3), as PEM: self-
-// signed by k, for name alone, with the critical acmeIdentifier extension
-// holding the SHA-256 of key_authorization, the challenge's token and the
-// account key's thumbprint. A server answers with it to a client that sends
-// name in SNI and offers only "acme-tls/1" (choose_context). "" on failure.
-fn challenge_certificate(k: Key, name: const u8[:], key_authorization: const u8[:]) -> u8[>..] {
-    var s: u8[>..] = [];
+// signed by k, for name alone, valid for 7 days, with the critical
+// acmeIdentifier extension holding digest, the 32-byte SHA-256 of the key
+// authorization (the challenge's token and the account key's thumbprint). A
+// server answers with it to a client that sends name in SNI and offers
+// "acme-tls/1" (choose_context). Fails when name is empty or longer than 255
+// bytes, or digest isn't 32 bytes.
+fn challenge_certificate(k, name: const u8[:], digest: const u8[:]) -> u8[>..] {
     var list: u8[>..] = [];
-    guard wire([name], 255, list) else { return s; }
-    self_signed_c(k.id, list, 7, sha256(key_authorization), s);
+    if !wire([name], 255, list) { fail("challenge_certificate: the name must be 1 to 255 bytes"); }
+    if digest.len != 32 { fail("challenge_certificate: the digest must be SHA-256's 32 bytes"); }
+    var s: u8[>..] = [];
+    if !self_signed_c(k.id, list, 7, digest, s) { fail("challenge_certificate"); }
     return s;
 }

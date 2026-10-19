@@ -16,14 +16,13 @@
 // With choose, it picks each connection's context at the ClientHello, as an
 // ACME client's TLS-ALPN-01 does: a client that sends acme.test in SNI and
 // offers acme-tls/1 gets a challenge certificate for acme.test, whose
-// acmeIdentifier is the SHA-256 of KEY_AUTHORIZATION, and ALPN acme-tls/1; one
-// that sends other.test gets a self-signed certificate for other.test; every
-// other gets CERT. It prints each choice.
+// acmeIdentifier is check::DIGEST, the SHA-256 of "token.thumbprint", and ALPN
+// acme-tls/1; one that sends other.test gets a self-signed certificate for
+// other.test; every other gets CERT. It prints each choice.
 import std;
 import os;
 import tls from "../../";
-
-let KEY_AUTHORIZATION = "token.thumbprint";
+import check from "../";
 
 // The contexts choose picks from.
 var other = tls::Context { .. };
@@ -284,14 +283,24 @@ fn main() {
         if !yes { kernel_enable(ctx.id, true); }
     }
     if opt == "choose" {
-        let k = tls::key_generate();
-        let pem = tls::key_pem(k);
+        var pem: u8[>..] = [];
+        var other_crt: u8[>..] = [];
+        var acme_crt: u8[>..] = [];
+        let failed = tls::run() {
+            let k = tls::key_generate(tls::P256);
+            pem = tls::key_pem(k);
+            other_crt = tls::self_signed(k, ["other.test"], 1);
+            acme_crt = tls::challenge_certificate(k, "acme.test", check::DIGEST);
+            tls::free(k);
+        };
+        for e in failed {
+            print("no certificates: ", e.message);
+            exit(1);
+        }
         var ook = false;
         var aok = false;
-        other, ook = tls::server(tls::self_signed(k, ["other.test"], 1), pem, ["http/1.1"]);
-        acme, aok = tls::server(tls::challenge_certificate(k, "acme.test", KEY_AUTHORIZATION), pem,
-                                ["acme-tls/1"]);
-        tls::free(k);
+        other, ook = tls::server(other_crt, pem, ["http/1.1"]);
+        acme, aok = tls::server(acme_crt, pem, ["acme-tls/1"]);
         guard ook && aok && tls::choose_context(ctx) else {
             print("no contexts to choose from: ", tls::error_text());
             exit(1);

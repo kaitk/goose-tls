@@ -1,7 +1,7 @@
 #!/bin/sh
 # Runs every test this repository has, and fails on the first step that fails:
-# the typecheck of each test program under test/tools/, the tests under
-# test/<area>/ (test/run_tests.py, which reports all of its failures), the
+# the typecheck of tls.goose and of each program under test/tools/, the tests
+# under test/<area>/ (test/run_tests.py, which reports all of its failures), the
 # handshakes against openssl s_client and curl (scripts/test-handshake.sh),
 # then the keys and certificates against openssl (scripts/test-crypto.sh).
 #
@@ -19,7 +19,7 @@ step() {
     echo "== $*"
 }
 
-for f in "$root"/test/tools/*.goose; do
+for f in "$root"/tls.goose "$root"/test/tools/*.goose; do
     step "check ${f#"$root"/}"
     "$GOOSE" check "$f"
 done

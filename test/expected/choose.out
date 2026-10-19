@@ -27,4 +27,4 @@ acme.test offering 1 protocol(s):
   after: server WANT_INPUT, client FAILED, server alpn 'acme-tls/1'
   client: certificate verify failed: unhandled critical extension
 use_context before the ClientHello fails: ok
-a context without choose_context: server done, server_name 'localhost', offered 0 bytes
+a context without choose_context: server done, server_name 'localhost', protocols_offered 0 bytes
