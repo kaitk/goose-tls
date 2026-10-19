@@ -29,13 +29,12 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 
 ## Quick start
 
-A program declares the package in its root file, here from a checkout beside it, and
-builds with CMake and OpenSSL's headers and libraries installed
-([development](docs/development.md#openssl)):
+A program declares the package in its root file at a tag, and builds with CMake and
+OpenSSL's headers and libraries installed ([development](docs/development.md#openssl)):
 
 ```goose
 import std;
-import tls from "../goose-tls";
+import tls from "github.com/kaitk/goose-tls@v0.0.1";
 
 fn main() {
     let ctx, ok = tls::server_files("server.crt", "server.key", ["h2", "http/1.1"]);
@@ -60,6 +59,8 @@ fn main() {
 ```sh
 goose build server.goose
 ```
+
+The tag `v0.0.1` has everything in the table above.
 
 `test/tools/echo_server.goose` is a whole server, and `test/tools/client.goose` a whole
 client, over blocking sockets of their own.
@@ -92,15 +93,15 @@ All of it is in `tls.goose`, in the `tls` namespace.
 | `library()` | The OpenSSL the program runs with |
 | `choose_context(ctx) -> bool` | Makes the context's handshakes pause at the ClientHello, with `HELLO` |
 | `server_name(c)` | The SNI name the client sent; "" for none |
-| `offers(c, protocol) -> bool`, `offered(c)` | Whether the client offered a protocol in ALPN; the whole list, in its wire format |
+| `offers(c, protocol) -> bool`, `protocols_offered(c)` | Whether the client offered a protocol in ALPN; the whole list, in its wire format |
 | `use_context(c, ctx) -> bool` | Moves a connection paused at `HELLO` to another server context |
-| `key_generate() -> Key`, `key_from_pem(pem) -> Key` | An EC P-256 key, new or from PEM |
+| `run() { ... } -> Error[]` | Runs the key and certificate calls below: no error, or the `Error` one left with, OpenSSL's reason in its `message` |
+| `key_generate(P256) -> Key`, `key_from_pem(pem) -> Key` | An EC P-256 key, new or from PEM |
 | `key_pem(k)`, `public_xy(k)` | The key as PKCS#8 PEM; its public point, x then y, 32 bytes each |
 | `sign_es256(k, data)` | An ES256 signature, the 64 bytes `r \|\| s` JWS takes |
-| `sha256(data)` | A SHA-256 digest |
 | `csr(k, names)` | A certificate signing request for DNS names, as DER |
 | `self_signed(k, names, days)` | A self-signed certificate, as PEM |
-| `challenge_certificate(k, name, key_authorization)` | TLS-ALPN-01's certificate, with the `acmeIdentifier` extension, as PEM |
+| `challenge_certificate(k, name, digest)` | TLS-ALPN-01's certificate, whose `acmeIdentifier` extension holds `digest`, the key authorization's SHA-256, as PEM |
 | `kernel_supported() -> bool` | Whether this kernel has kTLS; false off Linux |
 | `use_kernel(ctx) -> bool` | Makes the context's new connections ready to move to the kernel; false where it has no kTLS |
 | `to_kernel(c, fd) -> i64` | Moves a connection to kTLS on its socket: the directions taken, `KERNEL_RX` and `KERNEL_TX` as bits, or `WANT_INPUT`, `PENDING`, `FAILED` |
@@ -117,6 +118,11 @@ per connection adds `HELLO` (read the ClientHello and choose); its steps are in
 (read and drain first) and `UPDATE_TX` (send a KeyUpdate); its steps, and the records
 a program sends through the kernel (`CLOSE_NOTIFY`, `KEY_UPDATE`), are in
 [architecture](docs/architecture.md#ktls-on-linux).
+
+The key and certificate calls have no statuses: one that fails leaves through `return
+... from tls::run`, so they run inside `tls::run`, or the program doesn't compile
+([architecture](docs/architecture.md#keys-and-certificates)). SHA-256, for the key
+authorization's digest, is [goose-hash](https://github.com/kaitk/goose-hash)'s.
 
 A context speaks TLS 1.3 only, with `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
 and `TLS_CHACHA20_POLY1305_SHA256`, chosen by the server in that order. It passes

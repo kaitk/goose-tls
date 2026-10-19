@@ -55,6 +55,29 @@ Writing the two files only when their contents change, and a lock on the package
 build directory while it builds, would fix it. Workaround: `test/run_tests.py` runs one
 `goose build` at a time, and the test programs in parallel.
 
+### A typed library function that can fail breaks every program that imports it
+
+Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet; goose-sqlite records the
+`goose check` side of it.
+
+A fully typed function of an imported module that reaches `return ... from run` is
+checked as if called with nothing around it, even when no program calls it: `goose
+check`, `goose run`, and `goose build` of any program that imports the module fail
+with "return from run: no enclosing call of run on this compile-time call path". A
+generic function is checked only where it's called, and passes. Expected: a function
+no program calls isn't checked against a call path no program has.
+
+```sh
+mkdir lib app
+printf 'namespace lib;\nfn run<F>() -> i64 { F(); return 0; }\nfn fail() { return 1 from run; }\nfn rejected(x: i64) { if x < 0 { fail(); } }\nfn plain() -> i64 { 7 }\n' > lib/lib.goose
+printf 'import std;\nimport lib from "../lib";\nfn main() { print(lib::plain()); }\n' > app/app.goose
+goose run app/app.goose      # error: return from run: no enclosing call of run ...
+```
+
+Workaround: each function in `tls.goose` that can fail takes an untyped parameter,
+such as `key_pem(k)`; `key_generate`, which has nothing else to take, takes the curve,
+`key_generate(tls::P256)`.
+
 ## Feature requests
 
 ### A package's C is linked only when the program calls the package

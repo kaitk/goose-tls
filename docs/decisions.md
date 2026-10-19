@@ -127,4 +127,22 @@ with its reason and the trade-off that matters.
   `r || s`, CSRs DER for finalize's base64url, and certificates PEM, which `tls::server`
   takes. The ACME package then needs no ASN.1 of its own. Rejected: RSA account keys,
   and a general signing API with a choice of algorithm, which no user needs yet. The
-  trade-off: a program that wants another key type needs a new call.
+  trade-off: a program that wants another key type needs a new call. Hashes are
+  goose-hash's, not this package's: `tls::challenge_certificate` takes the key
+  authorization's SHA-256, which the ACME package computes with goose-hash
+  (2026-10-19).
+- **Key and certificate calls fail through `return ... from tls::run`
+  (2026-10-19).** `tls::key_generate`, `key_from_pem`, `key_pem`, `public_xy`,
+  `sign_es256`, `csr`, `self_signed`, and `challenge_certificate` leave the innermost
+  `tls::run` with a `tls::Error` whose message names the call and carries OpenSSL's
+  reasons, as goose-sqlite's calls leave `sqlite::run`. An ACME client makes a chain of
+  these calls, and one check of `run`'s result replaces a check after each, which ""
+  sentinels needed and a caller could skip; a call outside `run` doesn't compile. The
+  connection calls keep their statuses and "" results: `WANT_INPUT` and `HELLO` aren't
+  failures, and an event loop handles each status where it happens. Each failing call
+  takes an untyped parameter, so it is compiled only where a program calls it, since
+  `goose check` and `goose run` reject a fully typed one ([findings](goose-findings.md));
+  for `key_generate`, which has nothing else to take, that is the curve, `tls::P256`,
+  the only one it accepts. The trade-off: a program that makes a key writes it into a
+  variable outside `run`'s block, and `key_generate` takes an argument with one valid
+  value.
