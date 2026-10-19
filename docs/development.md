@@ -1,25 +1,21 @@
 # Development
 
-## Layout
+The package is Goose over a C shim and OpenSSL. Tests have run on macOS on arm64 and on
+Ubuntu 24.04 on arm64 in Docker (2026-10-19). The repository's layout is in
+[README.md](../README.md#layout).
 
-```
-tls.goose           the package: namespace tls, the API over the shim
-tls.build           the sidecar: the shim is the CMake target goose_tls
-CMakeLists.txt      builds the shim
-cmake/openssl.cmake finds OpenSSL, for the package and the test peer
-shim/tls.c          the C: OpenSSL's API as handles, bytes, and status codes
-shim/ktls.c         kTLS: the kernel's keys, set on the program's socket
-shim/tls.h          what the two share
-test/<area>/        the tests, each a program with a golden file in test/expected/
-test/certs/         a self-signed RSA-2048 pair for the tests, valid until 2125, and a
-                    key that matches no certificate (other.key)
-test/hellos/        ClientHellos recorded from openssl s_client 4.0.3, offering TLS 1.2
-                    only and TLS 1.3, each with ALPN h2 and http/1.1
-test/tools/         the handshake tests' server, with sockets of its own (net.c)
-test/tools/peer/    a package for the kTLS tests: an OpenSSL client over memory BIOs,
-                    and the kernel's TLS 1.3 record layer in user space
-scripts/            goose.sh, test.sh, test-handshake.sh
-```
+## Toolchain
+
+Use the Goose pin in [README.md](../README.md#pins). The scripts also need:
+
+| Tool | Requirement | Purpose |
+|---|---|---|
+| C compiler | clang or gcc | `goose build`, the shim, and the test programs' sockets |
+| CMake | 3.20 or later, with Make or Ninja | the shim's build ([OpenSSL](#openssl)) |
+| OpenSSL | 3.0 or later, headers and libraries | the shim links it |
+| `openssl` and `curl` | on `PATH`; any TLS 1.3 client | the handshake and crypto checks |
+| Python | 3 | `test/run_tests.py` |
+| POSIX shell, git, curl, perl, shasum | on `PATH` | the scripts; perl for a time limit |
 
 ## Set up the Goose compiler
 
@@ -40,6 +36,29 @@ CMake.
 The `.build` sidecar needs `exclude = ["build"]`, as goose-http's has: Goose collects a
 package's JIT symbol table from every `.goose` file under its root, and the release's
 stdlib under `build/` declares the runtime's `extern fn`s.
+
+### Move the pin
+
+The pin is a Goose release. At the start of a session, check for a newer one:
+
+```sh
+gh release list -R aardappel/goose --limit 3
+```
+
+To move to a new release, update `goose_release` and the four archives' SHA-256 sums in
+`scripts/goose.sh`. GitHub lists each asset's digest:
+
+```sh
+gh api repos/aardappel/goose/releases/tags/<tag> -q '.assets[] | "\(.name) \(.digest)"'
+```
+
+Then run `scripts/test.sh`, and update the pin in `README.md` and this page's release
+paths, in its own commit. Packages imported by the same program must use a compatible
+Goose pin, since the program builds with one compiler.
+
+Pin a commit only when a Goose fix that this repository needs isn't in a release yet:
+set `GOOSE_COMMIT` in the scripts' environment, record the commit in the README's Pins
+table with the reason, and return to a release once one includes the fix.
 
 ## OpenSSL
 
@@ -79,16 +98,27 @@ grep -l "$PWD\"" ~/.goose/build/pkg/local/*/*/wrapper/CMakeLists.txt
 
 `scripts/test.sh` runs everything:
 
+- The typecheck of each program under `test/tools/`.
 - `test/run_tests.py`: the programs under `test/<area>/`, built with `goose build` at
-  `-O0` and `-O2` and checked against `test/expected/<name>.out`. They feed a context
-  and a connection PEM text and recorded ClientHellos, with no sockets.
+  `-O0` and `-O2` and checked against `test/expected/<name>.out`. They feed contexts
+  and connections PEM text and recorded ClientHellos, or run a client and a server
+  against each other in memory (`test/check.goose`), with no sockets.
   `test/run_tests.py --bless` rewrites the golden files from a run.
-- `scripts/test-handshake.sh`: builds `test/tools/echo_server.goose`, makes a fresh
-  self-signed RSA-2048 pair, and checks the server on port 8081 (`PORT`) with
-  `openssl s_client` and `curl`: an echo, a refused TLS 1.2 client, ALPN, HTTP/1.1
-  requests, HttpArena's TLS checks, and an echo across s_client's two KeyUpdates. Then
-  the same over kTLS, with curl too, where the kernel has it, or else that the server
-  falls back to user space. `OPENSSL` and `CURL` name other clients.
+- `scripts/test-handshake.sh`: builds `test/tools/echo_server.goose` and
+  `test/tools/client.goose`, makes a fresh self-signed RSA-2048 pair, and checks the
+  server on port 8081 (`PORT`) with `openssl s_client` and `curl`: an echo, a refused
+  TLS 1.2 client, ALPN, HTTP/1.1 requests, HttpArena's TLS checks, and a context chosen
+  per connection from `-servername` and `-alpn acme-tls/1`, with the challenge
+  certificate's form. Then the package's client: a verified handshake and a request to
+  a public HTTPS server (`HTTPS_HOST`, default `example.com`; `none` skips it on a
+  machine without the internet), and the test server's self-signed certificate refused.
+  Then an echo across s_client's two KeyUpdates, and the same over kTLS, with curl too,
+  where the kernel has it, or else that the server falls back to user space.
+  `OPENSSL` and `CURL` name other clients.
+- `scripts/test-crypto.sh`: builds `test/tools/crypto_files.goose`, which writes a key,
+  a signature, a CSR, and certificates, from a key of its own and from one `openssl`
+  made, and checks them with `openssl pkey`, `dgst -verify`, `req -verify`, `verify`,
+  `x509 -text`, and `asn1parse`.
 
 The tests under `test/kernel/` check kTLS without a kernel: the shim's keys against RFC
 8448's traces, and a connection moved to the kernel, with `test/tools/peer/` playing the
@@ -109,12 +139,13 @@ script checks a kTLS echo without them.
 
 The handshake tests need `openssl`, `curl`, and `perl` (for a time limit, since macOS has
 no `timeout`). macOS's `curl` uses LibreSSL, which speaks TLS 1.3 and ALPN, so it serves.
-The test server's sockets are POSIX only.
+The test programs' sockets are POSIX only. The client's check of a public server needs
+OpenSSL's trust store filled: the `ca-certificates` package on Debian and Ubuntu, and
+Homebrew's `ca-certificates`, which its `openssl@3` depends on, on macOS.
 
-Two `goose build`s at once that both configure the package's CMake build for the first
-time fail ([findings](goose-findings.md)), so `test/run_tests.py` builds its first test
-alone, and the first to import each other package, the test peer, alone too, then the
-rest in parallel.
+Two `goose build`s at once can fail in the package's shared CMake build
+([findings](goose-findings.md)), so `test/run_tests.py` runs one build at a time and
+the test programs in parallel.
 
 ### On Linux, from macOS
 
