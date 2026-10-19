@@ -99,3 +99,32 @@ with its reason and the trade-off that matters.
   and key's PEM bytes, and `tls::server_files` reads the files with Goose's `os` module.
   A certificate that an ACME package gets, or one that replaces another while the server
   runs, is already in memory.
+- **The context is chosen in Goose, at a paused handshake (2026-10-19).** A context
+  given to `tls::choose_context` pauses each handshake after the ClientHello (OpenSSL's
+  client hello callback returning `SSL_CLIENT_HELLO_RETRY`), and `tls::handshake`
+  returns `tls::HELLO`; the program reads the SNI name and the offered ALPN list, calls
+  `tls::use_context`, and calls `tls::handshake` again, when the callback moves the
+  connection with `SSL_set_SSL_CTX`, before ALPN is selected. Which certificate a name
+  gets, and when a TLS-ALPN-01 challenge is live, is configuration and ACME's state,
+  which the package's rules put in Goose, and a C callback can't call into Goose.
+  Rejected: the servername callback (`SSL_CTX_set_tlsext_servername_callback`), which
+  also runs in C inside the handshake and could only consult a table of names to
+  contexts kept in the shim, putting ACME's state in C. The trade-off: the shim reads
+  SNI and ALPN from the ClientHello's raw extension bytes, since OpenSSL parses them only
+  after the callback, and a server that chooses makes one more call per handshake.
+- **A client verifies against OpenSSL's store or the program's certificates
+  (2026-10-19).** `tls::client` trusts OpenSSL's default store
+  (`SSL_CTX_set_default_verify_paths`), and `tls::client_trusting` only the PEM it is
+  given; both check the host name with `SSL_set1_host`, without partial wildcards.
+  There is no client that skips verification: an ACME directory is a public HTTPS
+  server, and a test server's own certificate can be trusted by name. Rejected: the
+  platform's own store (the macOS keychain, Windows' certificate store), which OpenSSL
+  doesn't read without code per platform. The trade-off: on macOS and Windows, the
+  store is the one the OpenSSL install ships, such as Homebrew's `ca-certificates`, not
+  the system's.
+- **ACME's crypto in its protocols' forms (2026-10-19).** Keys are EC P-256 only,
+  ES256 being the algorithm every ACME server accepts; signatures are JWS's raw
+  `r || s`, CSRs DER for finalize's base64url, and certificates PEM, which `tls::server`
+  takes. The ACME package then needs no ASN.1 of its own. Rejected: RSA account keys,
+  and a general signing API with a choice of algorithm, which no user needs yet. The
+  trade-off: a program that wants another key type needs a new call.
