@@ -1,0 +1,5 @@
+good pair: true true
+mismatched key: false false (an error)
+not PEM: false false (an error)
+empty ALPN name: false false
+missing file: false false

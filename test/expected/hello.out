@@ -1,0 +1,8 @@
+fresh: read WANT_INPUT, write WANT_INPUT, pending 0, version '', alpn ''
+TLS 1.3 hello: feed true, handshake WANT_INPUT, to send: record type 22, version 3.3
+  after: pending 0, handshake WANT_INPUT
+TLS 1.2 hello: handshake FAILED, to send: record type 21, version 3.3, alert 2 70
+  reason: error:0A000102:SSL routines::unsupported protocol
+plaintext HTTP: handshake FAILED, to send: 0 bytes
+  reason: error:0A00009C:SSL routines::http request
+after the context is freed: handshake WANT_INPUT, to send: record type 22, version 3.3

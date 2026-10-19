@@ -1,0 +1,6 @@
+// The package's C: the shim over OpenSSL, built by CMakeLists.txt, which finds
+// OpenSSL on each platform (docs/development.md, "OpenSSL").
+cmake_target = "goose_tls";
+// build/ holds the compiler scripts/goose.sh fetches, whose stdlib declares the
+// runtime's extern fns.
+exclude = ["build"];
