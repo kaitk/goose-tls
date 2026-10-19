@@ -72,11 +72,30 @@ start() {
     done
     sed 's/^/  server: /' "$log"
 }
+# Whether the server's log gets a line matching $1 within 5 s: the server may print
+# after the client has its answer.
+logged() {
+    i=0
+    until grep -q "$1" "$log"; do
+        i=$((i + 1))
+        [ $i -gt 50 ] && return 1
+        sleep 0.1
+    done
+}
 # s_client's output for a connection to the server, with its stdin from $1.
 s_client() {
     input=$1
     shift
     printf '%b' "$input" | limit 10 "$openssl" s_client -connect "127.0.0.1:$port" -servername localhost "$@" 2>&1 || :
+}
+# The same, sending $1 and, a second later, "bye", which ends the connection. The
+# server asks for the kernel once it has answered what came with the handshake, so a
+# "bye" in the same read would close the connection before it asks.
+s_client_then_bye() {
+    input=$1
+    shift
+    { printf '%b' "$input"; sleep 1; printf 'bye\n'; } |
+        limit 10 "$openssl" s_client -connect "127.0.0.1:$port" -servername localhost "$@" 2>&1 || :
 }
 
 echo
@@ -221,26 +240,26 @@ if grep -q '^kernel tls: yes' "$log"; then
     minor=$(echo "$release" | cut -d. -f2)
     if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -ge 14 ]; }; then
         keyupdates "kTLS"
-        grep -q '^kernel record: type 22, UPDATE_TX$' "$log" && grep -q '^kernel record: type 22, 0$' "$log" &&
+        logged '^kernel record: type 22, UPDATE_TX$' && logged '^kernel record: type 22, 0$' &&
             pass "both KeyUpdates went through kernel_record" ||
             fail "KeyUpdates: $(cat "$log")"
     else
-        out=$(s_client 'hello, ktls\nbye\n' -ign_eof)
+        out=$(s_client_then_bye 'hello, ktls\n' -ign_eof)
         printf '%s\n' "$out" | grep -q '^hello, ktls$' && pass "kTLS: s_client gets back what it sent" ||
             fail "kTLS echo: $out"
         echo "  NOTE Linux $release can't change kTLS keys (6.14 can), so KeyUpdates weren't run"
     fi
-    grep -q '^kernel: RX TX$' "$log" && pass "the kernel took both directions" ||
+    logged '^kernel: RX TX$' && pass "the kernel took both directions" ||
         fail "the kernel didn't take both: $(cat "$log")"
     start http kernel
     got=$(limit 10 "$curl" -sk --http1.1 -d 'ping over ktls' "https://localhost:$port/echo" || :)
     [ "$got" = "ping over ktls" ] && pass "curl --http1.1 POST over kTLS gets its body back" ||
         fail "curl POST over kTLS: $got"
-    grep -q '^kernel: RX TX$' "$log" && pass "curl's connection went to the kernel" ||
+    logged '^kernel: RX TX$' && pass "curl's connection went to the kernel" ||
         fail "curl's connection: $(cat "$log")"
 else
-    out=$(s_client 'hello, tls\nbye\n' -ign_eof)
-    printf '%s\n' "$out" | grep -q '^hello, tls$' && grep -q '^kernel: none' "$log" &&
+    out=$(s_client_then_bye 'hello, tls\n' -ign_eof)
+    printf '%s\n' "$out" | grep -q '^hello, tls$' && logged '^kernel: none' &&
         pass "no kTLS in this kernel: the server serves from user space" ||
         fail "no kTLS, and the fallback failed: $out $(cat "$log")"
     echo "  NOTE this kernel has no kTLS, so the kTLS echo, KeyUpdates, and curl weren't run"
