@@ -4,8 +4,9 @@
 Each test/<area>/<name>.goose is a program. The runner typechecks them in
 batches, a `goose --multi-test --check` run per batch; builds each with
 `goose build` at -O0 and at -O2, which builds the C the package's sidecar
-(tls.build) names, OpenSSL's shim, and links it; and runs each as a
-process of its own, all in parallel. A run passes when its stdout is
+(tls.build) names, OpenSSL's shim, and links it, one build at a time, since
+two at once race in the package's CMake build (docs/goose-findings.md); and
+runs each as a process of its own, all in parallel. A run passes when its stdout is
 test/expected/<name>.out, every nonblank line of test/expected/<name>.stderr,
 if there is one, occurs in its stderr, and it exits 0, or not 0 where
 test/expected/<name>.aborts exists. Each test builds and runs in a directory
@@ -14,8 +15,10 @@ of its own, build/test/O<level>/<name>/, so files it writes meet no other's.
 A file with `// error: <message>` lines is a fixture that must not compile:
 `goose --multi-test --check` must exit 1, with each message in its diagnostics.
 
-test/tools/ holds what the tests use, not tests: the handshake tests' server
-(scripts/test-handshake.sh), and the kTLS tests' peer package (peer/).
+test/tools/ holds what the scripts and tests use, not tests: the handshake
+tests' server and client (scripts/test-handshake.sh), crypto_files
+(scripts/test-crypto.sh), and the kTLS tests' peer package (peer/).
+test/check.goose holds what the tests share.
 
 Every failure is reported, with a count per area at the end. GOOSE or
 GOOSE_COMMIT names the compiler (default: the pinned release,
@@ -31,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -125,6 +129,7 @@ class Tests:
         self.pool = concurrent.futures.ThreadPoolExecutor(jobs)
         self.jobs = jobs
         self.failed = set()
+        self.building = threading.Lock()
 
     def report(self, test, label, problem=None, detail=""):
         name = f"{test.parent.name}/{test.stem}"
@@ -173,8 +178,9 @@ class Tests:
             work.mkdir(parents=True, exist_ok=True)
             exe = work / test.stem
             cc = ["--cc", self.cc] if self.cc else []
-            code, out, err = run([self.goose, "build", f"-O{level}", *cc, "-o", exe,
-                                  test.as_posix()], cwd=work)
+            with self.building:
+                code, out, err = run([self.goose, "build", f"-O{level}", *cc, "-o", exe,
+                                      test.as_posix()], cwd=work)
             if code != 0:
                 results[level] = (out + err, None)
             else:
@@ -183,21 +189,12 @@ class Tests:
 
     def check_programs(self, programs, checked):
         runs = {}
-        configured = set()
         for f in programs:
             code, out, err = checked[f]
             if code != 0:
                 self.report(f, "--check", "doesn't compile", out + err)
             else:
                 runs[f] = self.pool.submit(self.build_and_run, f)
-                # The first build to import a package configures its CMake
-                # project, which two builds at once can't share
-                # (docs/goose-findings.md); the rest find it built.
-                packages = set(re.findall(r'^import \w+ from "([^"]+)"',
-                                          f.read_text(encoding="utf-8"), re.MULTILINE))
-                if packages - configured:
-                    runs[f].result()
-                    configured |= packages
         for f, future in sorted(runs.items(), key=lambda r: str(r[0])):
             for level, (failure, result) in future.result().items():
                 if failure is not None:

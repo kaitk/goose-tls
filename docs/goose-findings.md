@@ -12,15 +12,23 @@ its expected work puts it, and delete an entry once the pin has its fix: git kee
 
 ## Bugs
 
-### Two first builds of a CMake package at once fail
+### Two builds of a CMake package at once can fail
 
-Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet.
+Found on `v2026.2` (`3ee3871`), 2026-10-19; still in `dcc2747`. Not reported yet.
 
 Two `goose build`s that run at once, for two programs importing the same package with a
-`cmake_target`, both configure the package's CMake build in the same directory under
-`~/.goose/build/pkg/` when neither finds it built, and one or both fail. Once it is
-built, parallel builds succeed. Five runs out of five failed from a cold cache, none
-from a warm one:
+`cmake_target`, share the package's CMake build directory under `~/.goose/build/pkg/`,
+and one or both can fail:
+
+- From a cold cache, both configure it. Five runs out of five failed on macOS.
+- Once it is built, each build still rewrites `goose_linkprobe.c` and
+  `goose_symbols.c` there (`src/native.h`), so each recompiles and relinks the probe,
+  and one can link the object the other is writing. With Make, on Ubuntu 24.04 in
+  Docker, 3 of 40 builds failed, four at a time from a warm cache, with `undefined
+  reference to 'main'` or `file not recognized` linking `goose_linkprobe`. On macOS,
+  also with Make, `test/run_tests.py`'s parallel builds hadn't failed.
+
+From a cold cache:
 
 ```sh
 mkdir lib a b
@@ -40,8 +48,12 @@ CMake Error at .../CMakeDetermineSystem.cmake:231 (configure_file):
   No such file or directory
 ```
 
-A lock on the package's build directory while it builds would fix it. Workaround:
-`test/run_tests.py` builds its first test alone, then the rest in parallel.
+From a warm cache, build `a` once, then build `a`, `b`, and two more like them at once,
+ten times.
+
+Writing the two files only when their contents change, and a lock on the package's
+build directory while it builds, would fix it. Workaround: `test/run_tests.py` runs one
+`goose build` at a time, and the test programs in parallel.
 
 ## Feature requests
 
