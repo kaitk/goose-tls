@@ -5,14 +5,19 @@
 ```
 tls.goose           the package: namespace tls, the API over the shim
 tls.build           the sidecar: the shim is the CMake target goose_tls
-CMakeLists.txt      builds shim/tls.c and finds OpenSSL
+CMakeLists.txt      builds the shim
+cmake/openssl.cmake finds OpenSSL, for the package and the test peer
 shim/tls.c          the C: OpenSSL's API as handles, bytes, and status codes
+shim/ktls.c         kTLS: the kernel's keys, set on the program's socket
+shim/tls.h          what the two share
 test/<area>/        the tests, each a program with a golden file in test/expected/
 test/certs/         a self-signed RSA-2048 pair for the tests, valid until 2125, and a
                     key that matches no certificate (other.key)
 test/hellos/        ClientHellos recorded from openssl s_client 4.0.3, offering TLS 1.2
                     only and TLS 1.3, each with ALPN h2 and http/1.1
 test/tools/         the handshake tests' server, with sockets of its own (net.c)
+test/tools/peer/    a package for the kTLS tests: an OpenSSL client over memory BIOs,
+                    and the kernel's TLS 1.3 record layer in user space
 scripts/            goose.sh, test.sh, test-handshake.sh
 ```
 
@@ -81,7 +86,26 @@ grep -l "$PWD\"" ~/.goose/build/pkg/local/*/*/wrapper/CMakeLists.txt
 - `scripts/test-handshake.sh`: builds `test/tools/echo_server.goose`, makes a fresh
   self-signed RSA-2048 pair, and checks the server on port 8081 (`PORT`) with
   `openssl s_client` and `curl`: an echo, a refused TLS 1.2 client, ALPN, HTTP/1.1
-  requests, and HttpArena's TLS checks. `OPENSSL` and `CURL` name other clients.
+  requests, HttpArena's TLS checks, and an echo across s_client's two KeyUpdates. Then
+  the same over kTLS, with curl too, where the kernel has it, or else that the server
+  falls back to user space. `OPENSSL` and `CURL` name other clients.
+
+The tests under `test/kernel/` check kTLS without a kernel: the shim's keys against RFC
+8448's traces, and a connection moved to the kernel, with `test/tools/peer/` playing the
+kernel's record layer and the client. They pass the shim stand-ins for a descriptor
+(`-1`, `-2` in `shim/ktls.c`) so it sets no socket option.
+
+### A kernel with kTLS
+
+kTLS needs Linux's `tls` module. `tls::kernel_supported()` reports it, or check by
+hand: `grep CONFIG_TLS /boot/config-$(uname -r)` (or `zcat /proc/config.gz`), and
+`sudo modprobe tls`, after which `/proc/net/tls_stat` exists and
+`/proc/sys/net/ipv4/tcp_available_ulp` lists `tls`. Docker Desktop's VM kernel has
+none (`7.0.14-linuxkit` on macOS arm64, `# CONFIG_TLS is not set`, checked 2026-10-19),
+so there the kTLS part of `scripts/test-handshake.sh` reports the fallback and skips
+the rest. A Linux machine or VM whose kernel has the module runs it; KeyUpdates through
+the kernel need Linux 6.14 or later, and on an older one (Ubuntu 24.04's 6.8, say) the
+script checks a kTLS echo without them.
 
 The handshake tests need `openssl`, `curl`, and `perl` (for a time limit, since macOS has
 no `timeout`). macOS's `curl` uses LibreSSL, which speaks TLS 1.3 and ALPN, so it serves.
@@ -89,7 +113,8 @@ The test server's sockets are POSIX only.
 
 Two `goose build`s at once that both configure the package's CMake build for the first
 time fail ([findings](goose-findings.md)), so `test/run_tests.py` builds its first test
-alone and the rest in parallel.
+alone, and the first to import each other package, the test peer, alone too, then the
+rest in parallel.
 
 ### On Linux, from macOS
 

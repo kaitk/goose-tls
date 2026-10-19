@@ -1,0 +1,8 @@
+server crypto_info: 40 bytes, version 0403, cipher 3300
+  key 9f02283b6c9c07efc26bb9f2ac92e356, salt cf782b88, iv dd83549aadf1e984, rec_seq 0000000000000001
+  the server's data record: as in RFC 8448
+client crypto_info: key 17422dda596ed5d9acd890e3c63f5051, salt 5b78923d, iv ee08579033e523d9, rec_seq 0000000000000000
+  the client's data record: type 23, the trace's payload
+  its alert: type 21, 0100
+SHA-384 suite with a SHA-256 secret: -3
+an unknown suite: -3

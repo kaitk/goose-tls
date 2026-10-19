@@ -1,0 +1,2 @@
+// The peer's C, over OpenSSL, built by CMakeLists.txt as the root's is.
+cmake_target = "goose_tls_peer";

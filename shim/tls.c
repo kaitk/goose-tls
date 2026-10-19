@@ -10,7 +10,8 @@
    A handle is the address of an SSL_CTX or an SSL, as an int64_t; 0 is none.
    None of these functions keeps a pointer into Goose memory after it returns,
    and none touches a socket: a connection reads from and writes to two memory
-   BIOs that tls_feed fills and tls_drain empties. Every function that can
+   BIOs that tls_feed fills and tls_drain empties. Handing a connection to the
+   kernel is ktls.c's. Every function that can
    fail clears this thread's OpenSSL error queue first, so after a failure the
    queue holds that failure's reasons, for tls_error_text. */
 #include <stdint.h>
@@ -23,16 +24,7 @@
 #include <openssl/x509.h>
 
 #include "goose.h"
-
-#define TLS_WANT_INPUT -1
-#define TLS_CLOSED -2
-#define TLS_FAILED -3
-
-#pragma pack(push, 1)
-typedef struct { const uint8_t *data; int64_t len; } tls_bytes;
-typedef struct { uint8_t *data; int64_t len; } tls_buf;
-#pragma pack(pop)
-_Static_assert(sizeof(tls_bytes) == sizeof(void *) + 8, "a Goose slice is { data, len }, packed");
+#include "tls.h"
 
 /* The server's ALPN list, in wire format, hangs off its SSL_CTX as ex_data, so
    that it lives exactly as long as the context: a connection holds a
@@ -164,6 +156,10 @@ int64_t tls_accept(int64_t h) {
     BIO_set_mem_eof_return(out, -1);
     SSL_set_bio(ssl, in, out);
     SSL_set_accept_state(ssl);
+    if (!ktls_attach(ssl)) {
+        SSL_free(ssl);
+        return 0;
+    }
     return (int64_t)(intptr_t)ssl;
 }
 
@@ -174,7 +170,8 @@ void tls_conn_free(int64_t h) {
 /* Takes bytes received from the peer: all of them, or TLS_FAILED. */
 int64_t tls_feed(int64_t h, tls_bytes data) {
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || data.len < 0) return TLS_FAILED;
+    if (!ssl || data.len < 0 || ktls_owns(ssl, KTLS_RX)) return TLS_FAILED;
+    ktls_frame(ssl, data.data, data.len);
     int64_t done = 0;
     while (done < data.len) {
         int64_t n = data.len - done;
@@ -229,7 +226,7 @@ int64_t tls_handshake(int64_t h) {
 int64_t tls_read(int64_t h, tls_buf buf) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || buf.len <= 0) return TLS_FAILED;
+    if (!ssl || buf.len <= 0 || ktls_owns(ssl, KTLS_RX)) return TLS_FAILED;
     size_t n = 0;
     int r = SSL_read_ex(ssl, buf.data, (size_t)buf.len, &n);
     return r == 1 ? (int64_t)n : status_of(ssl, r);
@@ -240,7 +237,7 @@ int64_t tls_read(int64_t h, tls_buf buf) {
 int64_t tls_write(int64_t h, tls_bytes data) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || data.len < 0) return TLS_FAILED;
+    if (!ssl || data.len < 0 || ktls_owns(ssl, KTLS_TX)) return TLS_FAILED;
     if (data.len == 0) return 0;
     size_t n = 0;
     int r = SSL_write_ex(ssl, data.data, (size_t)data.len, &n);
@@ -251,7 +248,7 @@ int64_t tls_write(int64_t h, tls_bytes data) {
 int64_t tls_shutdown(int64_t h) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl) return TLS_FAILED;
+    if (!ssl || ktls_owns(ssl, KTLS_TX)) return TLS_FAILED;
     /* 0 means ours is sent and the peer's not yet seen, which is all a
        server that closes needs. */
     return SSL_shutdown(ssl) >= 0 ? 0 : TLS_FAILED;
@@ -285,15 +282,22 @@ void tls_cipher(int64_t h, gs_rref out) {
         append_str(out, SSL_CIPHER_standard_name(SSL_get_current_cipher(ssl)));
 }
 
-/* This thread's OpenSSL errors, oldest first, one per line, and clears them. */
+/* This thread's OpenSSL errors, oldest first, one per line, each with the
+   text its raiser added after a colon, and clears them. */
 void tls_error_text(gs_rref out) {
     unsigned long e;
+    const char *data = NULL;
+    int flags = 0;
     int first = 1;
-    while ((e = ERR_get_error()) != 0) {
+    while ((e = ERR_get_error_all(NULL, NULL, NULL, &data, &flags)) != 0) {
         char line[256];
         ERR_error_string_n(e, line, sizeof line);
         if (!first) gs_bld_append(out, "\n", 1);
         append_str(out, line);
+        if ((flags & ERR_TXT_STRING) && data && *data) {
+            gs_bld_append(out, ": ", 2);
+            append_str(out, data);
+        }
         first = 0;
     }
 }

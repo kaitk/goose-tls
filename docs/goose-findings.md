@@ -45,6 +45,28 @@ A lock on the package's build directory while it builds would fix it. Workaround
 
 ## Feature requests
 
+### A package's C is linked only when the program calls the package
+
+Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet.
+
+A program that imports a package but calls none of its functions isn't linked with the
+package's C, so the program's own `extern fn` naming a function in that C fails to
+link. With one call into the package, it links:
+
+```sh
+mkdir lib a
+printf 'int one(void) { return 1; }\nint two(void) { return 2; }\n' > lib/one.c
+echo 'c_sources = ["one.c"];' > lib/lib.build
+printf 'namespace lib;\nextern fn one() -> i32;\n' > lib/lib.goose
+printf 'import std;\nimport lib from "../lib";\nextern fn two() -> i32;\nfn main() { print(two()); }\n' > a/a.goose
+cd a && goose build -o a a.goose      # Undefined symbols: "_two"
+```
+
+The tests reach the shim's test-only functions this way (`test/kernel/`). Linking every
+imported package's native part, or saying in `docs/packages.md` that only a called
+package is linked, would do. Workaround: `test/kernel/derive.goose`, which calls only
+test-only functions, also calls `tls::library()`.
+
 ### A sidecar can't name a library directory
 
 Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet.

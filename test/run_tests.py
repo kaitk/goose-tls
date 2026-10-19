@@ -14,8 +14,8 @@ of its own, build/test/O<level>/<name>/, so files it writes meet no other's.
 A file with `// error: <message>` lines is a fixture that must not compile:
 `goose --multi-test --check` must exit 1, with each message in its diagnostics.
 
-test/tools/ holds programs the scripts run, not tests: the handshake tests'
-server (scripts/test-handshake.sh).
+test/tools/ holds what the tests use, not tests: the handshake tests' server
+(scripts/test-handshake.sh), and the kTLS tests' peer package (peer/).
 
 Every failure is reported, with a count per area at the end. GOOSE or
 GOOSE_COMMIT names the compiler (default: the pinned release,
@@ -183,19 +183,21 @@ class Tests:
 
     def check_programs(self, programs, checked):
         runs = {}
-        first = True
+        configured = set()
         for f in programs:
             code, out, err = checked[f]
             if code != 0:
                 self.report(f, "--check", "doesn't compile", out + err)
             else:
                 runs[f] = self.pool.submit(self.build_and_run, f)
-                # The first build configures the package's CMake project,
-                # which two builds at once can't share
+                # The first build to import a package configures its CMake
+                # project, which two builds at once can't share
                 # (docs/goose-findings.md); the rest find it built.
-                if first:
+                packages = set(re.findall(r'^import \w+ from "([^"]+)"',
+                                          f.read_text(encoding="utf-8"), re.MULTILINE))
+                if packages - configured:
                     runs[f].result()
-                    first = False
+                    configured |= packages
         for f, future in sorted(runs.items(), key=lambda r: str(r[0])):
             for level, (failure, result) in future.result().items():
                 if failure is not None:

@@ -16,7 +16,48 @@ with its reason and the trade-off that matters.
 - **No I/O in the package.** A connection's state takes the bytes the program read and
   returns the bytes to send, through memory BIOs. goose-http's loops differ by platform
   (epoll, io_uring, kqueue, IOCP), and a library that read sockets itself would need a
-  path per loop.
+  path per loop. Amended for kTLS, below.
+- **kTLS keeps the package off the socket's data path (2026-10-19).** This amends "No
+  I/O in the package": after the handshake, the shim takes the socket's descriptor from
+  the program and sets socket options on it, `TCP_ULP` "tls", then
+  `setsockopt(SOL_TLS, TLS_RX)` and `TLS_TX` with the traffic keys, and again after a
+  KeyUpdate. It never reads or writes the socket. The program's loop, epoll or io_uring,
+  then sends and receives plaintext on it, and sends the two control records the kernel
+  can't make itself (close_notify, and a KeyUpdate) with `sendmsg`. The handshake's
+  bytes still move through memory BIOs and the program, so every loop keeps one path.
+  Rejected: OpenSSL owning the socket through a socket BIO from the start, which turns
+  kTLS on by itself (`SSL_OP_ENABLE_KTLS`) but puts the handshake's I/O in the shim and
+  breaks the io_uring loop, whose reads and writes are submitted and completed by the
+  ring. Nor does OpenSSL 3.0 to 4.x offer a public call that starts kTLS on an existing
+  connection or exports the kernel's keys; OpenSSL 3.5's QUIC callbacks give secrets
+  but replace the record layer. The trade-off: the shim follows OpenSSL's keys and
+  sequence numbers itself (the next decision), and a program that moves a connection to
+  the kernel handles its non-data records (`docs/architecture.md`).
+- **The kernel's keys from OpenSSL's public callbacks (2026-10-19).** The shim takes the
+  application traffic secrets from the keylog callback (`SSL_CTX_set_keylog_callback`,
+  public since 1.1.1), counts each direction's records from the message callback's
+  `SSL3_RT_HEADER` reports (`SSL_set_msg_callback`) since its keys last changed, and
+  derives key, IV, and salt with RFC 8446's HKDF-Expand-Label through `EVP_KDF`'s HKDF.
+  It follows a KeyUpdate the same way, on either side of the switch ("traffic upd").
+  Every call is in OpenSSL 3.0's API; the tests check the result against RFC 8448's
+  traces and against an OpenSSL client, on 3.0.13, 3.6.5, and 4.0.3. The callbacks are
+  set only on a context that asks for kTLS (`tls::use_kernel`), so other connections
+  pay nothing, and the secrets are wiped when the connection is freed. The switch
+  happens only at a record boundary of the bytes fed, and only once OpenSSL holds no
+  unread plaintext and no unsent bytes, so nothing read past the handshake is lost.
+  Receiving moves first: then OpenSSL can still send and answer a KeyUpdate with
+  `SSL_key_update`, while the other order would leave OpenSSL reading a KeyUpdate it
+  must answer with keys it no longer holds. A suite or kernel the switch fails on leaves
+  the connection in user space. The trade-off: the shim depends on the order in which
+  OpenSSL reports records and key changes, which is behavior, not a documented contract;
+  the tests catch a change on each OpenSSL the package supports.
+- **Handles are raw pointers (2026-10-19).** A `tls::Context` or `tls::Conn` holds the
+  address of OpenSSL's object, and using one after `tls::free` is undefined behavior,
+  documented and not checked. A checked table of handles would need a lock, since
+  goose-http's workers share a context across threads, and goose-http is the only
+  caller, which frees each handle at one place. The trade-off: a use-after-free in a
+  program is a crash or memory corruption rather than an error code. A checked table
+  can come when a second user needs it.
 - **ACME in a package of its own, built on goose-tls (2026-10-19).** ACME needs an HTTP
   client and JSON, so an ACME module here would make goose-tls depend on what depends
   on it: goose-http's `http.tls` imports goose-tls. Other Goose HTTP servers should be

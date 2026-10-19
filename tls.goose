@@ -1,7 +1,8 @@
 // TLS for a server, over OpenSSL (shim/tls.c). The package does no I/O: the
 // program reads from its socket and feeds the bytes to a connection, and sends
 // what it drains from it. The byte flow and its states are in
-// docs/architecture.md.
+// docs/architecture.md. On Linux, a connection can move to the kernel after its
+// handshake (to_kernel), which only sets the socket's options.
 //
 //   let ctx, ok = tls::server_files("server.crt", "server.key", ["http/1.1"]);
 //   let c = tls::accept(ctx);                 // for each accepted socket
@@ -38,6 +39,28 @@ let CLOSED = -2;
 // FAILED: a protocol error, or the peer broke off. Drain (an alert may be
 // waiting), close the socket, and free the connection; error_text says why.
 let FAILED = -3;
+// PENDING, from to_kernel: plaintext waits for read, or bytes for drain.
+// Read until WANT_INPUT, drain and send everything, and call again.
+let PENDING = -4;
+// UPDATE_TX, from kernel_record: the peer asked for a KeyUpdate. Once what
+// was sent before is on the socket, send KEY_UPDATE in a RECORD_HANDSHAKE
+// record through the kernel, call kernel_update_tx, then send on.
+let UPDATE_TX = -5;
+
+// The directions to_kernel and in_kernel report, as bits.
+let KERNEL_RX = 1;
+let KERNEL_TX = 2;
+
+// The record types a kTLS socket gives and takes besides data, in recvmsg's
+// TLS_GET_RECORD_TYPE and sendmsg's TLS_SET_RECORD_TYPE control messages.
+let RECORD_ALERT = 21;
+let RECORD_HANDSHAKE = 22;
+// What the program sends in a RECORD_ALERT record to close a connection
+// whose sending the kernel holds.
+let CLOSE_NOTIFY = "\x01\x00";
+// What it sends in a RECORD_HANDSHAKE record for UPDATE_TX, or to change its
+// own sending keys: a KeyUpdate that asks the peer for none in return.
+let KEY_UPDATE = "\x18\x00\x00\x01\x00";
 
 extern "tls_server_new" fn server_new_c(chain: const u8[:], key: const u8[:], alpn: const u8[:]) -> i64;
 extern "tls_context_free" fn context_free_c(id: i64);
@@ -55,6 +78,13 @@ extern "tls_version" fn version_c(id: i64, out: u8[>..]&);
 extern "tls_cipher" fn cipher_c(id: i64, out: u8[>..]&);
 extern "tls_error_text" fn error_text_c(out: u8[>..]&);
 extern "tls_library" fn library_c(out: u8[>..]&);
+extern "tls_kernel_supported" fn kernel_supported_c() -> bool;
+extern "tls_kernel_enable" fn kernel_enable_c(ctx: i64, anywhere: bool) -> bool;
+extern "tls_kernel_start" fn kernel_start_c(id: i64, fd: i64) -> i64;
+extern "tls_kernel_wants" fn kernel_wants_c(id: i64) -> i64;
+extern "tls_kernel_owned" fn kernel_owned_c(id: i64) -> i64;
+extern "tls_kernel_record" fn kernel_record_c(id: i64, fd: i64, kind: i64, body: const u8[:]) -> i64;
+extern "tls_kernel_update_tx" fn kernel_update_tx_c(id: i64, fd: i64) -> i64;
 
 // A server context from PEM text: chain holds the leaf certificate, then any
 // intermediates; key the leaf's private key. protocols are the ALPN names the
@@ -159,3 +189,55 @@ fn library() -> u8[>..] {
     library_c(s);
     return s;
 }
+
+// kTLS on Linux: after the handshake, the kernel takes the record layer, and
+// the program sends and receives plaintext on the socket itself. The steps
+// are in docs/architecture.md, "kTLS on Linux".
+
+// Whether this kernel has kTLS (Linux's tls module, CONFIG_TLS). False on
+// every other platform.
+fn kernel_supported() -> bool { kernel_supported_c() }
+
+// Makes the connections ctx accepts from now on ready to move to the kernel:
+// true, or false where the kernel has no kTLS, and then nothing changes.
+// Call it before ctx accepts its first connection.
+fn use_kernel(ctx: Context) -> bool { kernel_enable_c(ctx.id, false) }
+
+// Moves the connection to the kernel on socket fd, once the handshake is
+// done: which directions the kernel took, KERNEL_RX | KERNEL_TX, KERNEL_RX
+// alone, or 0, when the connection stays in user space as it was. Or a
+// status, after which the program calls it again:
+//
+// WANT_INPUT: the bytes fed end inside a record. Read exactly kernel_wants(c)
+// more bytes from the socket, feed them, and read the plaintext.
+// PENDING: read until WANT_INPUT, and drain and send everything.
+// FAILED: the handshake isn't done.
+//
+// Everything drained before must be on the socket before the program sends
+// through the kernel. A connection whose context didn't use_kernel gets 0.
+fn to_kernel(c: Conn, fd: i64) -> i64 { kernel_start_c(c.id, fd) }
+
+// How many bytes complete the record the bytes fed end in, after to_kernel
+// gave WANT_INPUT.
+fn kernel_wants(c: Conn) -> i64 { kernel_wants_c(c.id) }
+
+// Which directions the kernel holds, as to_kernel last reported them. Once
+// it holds receiving, feed and read fail; once it holds sending, write and
+// shutdown fail.
+fn in_kernel(c: Conn) -> i64 { kernel_owned_c(c.id) }
+
+// Takes a record that isn't data, which the kernel received on fd: its type,
+// from recvmsg's TLS_GET_RECORD_TYPE, and its plaintext. Returns 0 when the
+// connection goes on (a KeyUpdate: the kernel has the next keys, so receive
+// again, without waiting for the socket to be readable), UPDATE_TX, CLOSED
+// for close_notify, or FAILED: an alert, a message a client doesn't send
+// after the handshake, or a kernel that can't change keys (Linux before
+// 6.14). With sending still in user space, it queues the answer to a
+// KeyUpdate for drain, and returns 0.
+fn kernel_record(c: Conn, fd: i64, kind: i64, body: const u8[:]) -> i64 {
+    kernel_record_c(c.id, fd, kind, body)
+}
+
+// Moves the kernel's sending on fd to the next keys, right after the program
+// sent KEY_UPDATE through it: 0, or FAILED.
+fn kernel_update_tx(c: Conn, fd: i64) -> i64 { kernel_update_tx_c(c.id, fd) }

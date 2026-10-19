@@ -1,6 +1,10 @@
 /* Blocking TCP for the test server only (echo_server.goose): the package
-   itself never touches a socket. POSIX; returns -errno on failure. */
+   itself never reads or writes a socket. POSIX, and recvmsg's and sendmsg's
+   kTLS record types on Linux; returns -errno on failure. */
 #include <errno.h>
+#ifdef __linux__
+#include <linux/tls.h>
+#endif
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdint.h>
@@ -63,4 +67,62 @@ int64_t net_send(int64_t fd, net_bytes data) {
 
 void net_close(int64_t fd) {
     close((int)fd);
+}
+
+/* The type of the record net_recv_record last gave: 23 for data. */
+static __thread int64_t record_type = 23;
+
+int64_t net_record_type(void) { return record_type; }
+
+/* A receive on a kTLS socket: data, or one record that isn't, whose type
+   net_record_type gives, from the kernel's TLS_GET_RECORD_TYPE. */
+int64_t net_recv_record(int64_t fd, net_bytes buf) {
+#ifdef __linux__
+    char control[CMSG_SPACE(sizeof(unsigned char))];
+    struct iovec iov = { buf.data, (size_t)buf.len };
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    m.msg_control = control;
+    m.msg_controllen = sizeof control;
+    ssize_t n;
+    do n = recvmsg((int)fd, &m, 0); while (n < 0 && errno == EINTR);
+    if (n < 0) return -errno;
+    record_type = 23;
+    for (struct cmsghdr *c = CMSG_FIRSTHDR(&m); c; c = CMSG_NXTHDR(&m, c))
+        if (c->cmsg_level == SOL_TLS && c->cmsg_type == TLS_GET_RECORD_TYPE)
+            record_type = *(unsigned char *)CMSG_DATA(c);
+    return n;
+#else
+    (void)fd, (void)buf;
+    return -ENOSYS;
+#endif
+}
+
+/* Sends data as one record of the type through a kTLS socket's kernel, with
+   TLS_SET_RECORD_TYPE. */
+int64_t net_send_record(int64_t fd, int64_t type, net_bytes data) {
+#ifdef __linux__
+    char control[CMSG_SPACE(sizeof(unsigned char))];
+    struct iovec iov = { data.data, (size_t)data.len };
+    struct msghdr m;
+    memset(&m, 0, sizeof m);
+    memset(control, 0, sizeof control);
+    m.msg_iov = &iov;
+    m.msg_iovlen = 1;
+    m.msg_control = control;
+    m.msg_controllen = sizeof control;
+    struct cmsghdr *c = CMSG_FIRSTHDR(&m);
+    c->cmsg_level = SOL_TLS;
+    c->cmsg_type = TLS_SET_RECORD_TYPE;
+    c->cmsg_len = CMSG_LEN(sizeof(unsigned char));
+    *(unsigned char *)CMSG_DATA(c) = (unsigned char)type;
+    ssize_t n;
+    do n = sendmsg((int)fd, &m, 0); while (n < 0 && errno == EINTR);
+    return n < 0 ? -errno : n;
+#else
+    (void)fd, (void)type, (void)data;
+    return -ENOSYS;
+#endif
 }

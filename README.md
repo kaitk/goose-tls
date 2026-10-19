@@ -18,7 +18,7 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 | 🟢 | Server TLS 1.3 | A certificate chain and key from PEM, ALPN chosen by the server. Tested on macOS and Linux against OpenSSL 3.0, 3.6, and 4.0. |
 | 🔴 | SNI | A certificate per connection, from the server name and the offered ALPN protocols. |
 | 🟡 | Certificates swapped while running | Accept new connections from a new context; open ones keep theirs. Not yet tested under load. |
-| 🔴 | kTLS on Linux | The kernel takes the record layer after the handshake. |
+| 🟡 | kTLS on Linux | The kernel takes the record layer after the handshake, for all three suites, with KeyUpdate and close_notify. The keys are tested against RFC 8448 and an OpenSSL client on OpenSSL 3.0, 3.6, and 4.0, and the fallback to user space on macOS and on a Linux kernel without kTLS; not yet run on a kernel that has it. |
 | 🔴 | Client TLS | For an ACME directory, and for databases that ask for TLS. |
 | 🔴 | Keys, signatures, and certificates for ACME | An EC P-256 key, ES256 signing, a CSR, and the TLS-ALPN-01 challenge certificate. |
 
@@ -80,10 +80,20 @@ All of it is in `tls.goose`, in the `tls` namespace.
 | `alpn(c)`, `version(c)`, `cipher(c)` | The negotiated protocol, version, and suite; "" before the handshake |
 | `error_text()` | Why the last call on this thread failed, in OpenSSL's words |
 | `library()` | The OpenSSL the program runs with |
+| `kernel_supported() -> bool` | Whether this kernel has kTLS; false off Linux |
+| `use_kernel(ctx) -> bool` | Makes the context's new connections ready to move to the kernel; false where it has no kTLS |
+| `to_kernel(c, fd) -> i64` | Moves a connection to kTLS on its socket: the directions taken, `KERNEL_RX` and `KERNEL_TX` as bits, or `WANT_INPUT`, `PENDING`, `FAILED` |
+| `kernel_wants(c) -> i64` | After `WANT_INPUT` from `to_kernel`: how many bytes complete the record |
+| `in_kernel(c) -> i64` | The directions the kernel holds |
+| `kernel_record(c, fd, type, body) -> i64` | Takes a record the kernel received that isn't data: 0, `UPDATE_TX`, `CLOSED`, or `FAILED` |
+| `kernel_update_tx(c, fd) -> i64` | Moves the kernel's sending to the next keys, after a KeyUpdate sent through it |
 
 The statuses are negative, so a count is never mistaken for one: `WANT_INPUT` (feed
 more of what the socket gives), `CLOSED` (the peer sent close_notify), and `FAILED`
-(drain any alert, close the socket, and free the connection).
+(drain any alert, close the socket, and free the connection). kTLS adds `PENDING`
+(read and drain first) and `UPDATE_TX` (send a KeyUpdate); its steps, and the records
+a program sends through the kernel (`CLOSE_NOTIFY`, `KEY_UPDATE`), are in
+[architecture](docs/architecture.md#ktls-on-linux).
 
 A context speaks TLS 1.3 only, with `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`,
 and `TLS_CHACHA20_POLY1305_SHA256`, chosen by the server in that order. It passes
