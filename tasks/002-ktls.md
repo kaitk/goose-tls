@@ -54,6 +54,20 @@ Recorded in [decisions](../docs/decisions.md) (2026-10-19) and described for use
 - Both: a receive of exactly `tls::kernel_wants(c)` bytes while the switch waits for a
   record's end, and a send of everything drained before the switch.
 
+## Next: a kernel with kTLS
+
+Asked for 2026-10-19: check whether the Linux benchmark desktop's kernel (WSL2) has
+kTLS, and if it does, run the open kernel criteria there. On that machine:
+
+1. `uname -r`, and `zcat /proc/config.gz | grep CONFIG_TLS` (WSL2 kernels publish
+   their configuration there). `CONFIG_TLS=y` or `=m` is needed; with `=m`, run
+   `sudo modprobe tls` and check that `/proc/net/tls_stat` exists.
+2. With kTLS, `scripts/test.sh`. `scripts/test-handshake.sh` then runs the kTLS echo
+   and curl, and from Linux 6.14 the KeyUpdates. Record the kernel, the OpenSSL, and the
+   result in the criteria below and in `docs/development.md`.
+3. Without it, record the kernel and its `CONFIG_TLS` line here, and find another
+   machine: a Linux VM or a cloud instance on 6.14 or later.
+
 ## Acceptance criteria
 
 - [x] goose-tls reports, per connection, whether the kernel took each direction
