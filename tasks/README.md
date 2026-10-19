@@ -47,5 +47,7 @@ for the latest measurements.
 
 Task 001, server TLS, comes first: goose-http's HTTP/1.1 over TLS (its task 014) and
 HttpArena's TLS profiles (goose-rest's task 047) wait on it. Task 002, kTLS, follows
-it. Task 003, ACME, adds client TLS and waits on outbound connections in goose-http.
+it. Task 003 adds the hooks an outside ACME package needs (goose-rest's task 049):
+a certificate per connection, a certificate swapped while running, client TLS, and the
+crypto for ACME.
 

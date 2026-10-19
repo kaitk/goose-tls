@@ -17,6 +17,13 @@ with its reason and the trade-off that matters.
   returns the bytes to send, through memory BIOs. goose-http's loops differ by platform
   (epoll, io_uring, kqueue, IOCP), and a library that read sockets itself would need a
   path per loop.
+- **ACME in a package of its own, built on goose-tls (2026-10-19).** ACME needs an HTTP
+  client and JSON, so an ACME module here would make goose-tls depend on what depends
+  on it: goose-http's `http.tls` imports goose-tls. Other Goose HTTP servers should be
+  able to use it too, without goose-http. goose-tls provides the hooks it needs: a
+  certificate chosen per connection from SNI and ALPN, a certificate replaced while
+  running, client TLS, and the keys, signatures, CSR, and challenge certificate
+  (task 003). The package itself is goose-rest's task 049.
 
 ## Proposed
 
@@ -32,5 +39,3 @@ with its reason and the trade-off that matters.
 - How macOS and Windows get OpenSSL 3. macOS ships LibreSSL without headers; Homebrew's
   `openssl@3` sits under a prefix that differs by architecture. A `.build` sidecar takes
   libraries and flags per platform, not per machine.
-- Whether ACME lives here, as a module, or in a package of its own. It needs an HTTP
-  client, which goose-http doesn't have, and JSON.

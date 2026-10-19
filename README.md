@@ -16,14 +16,16 @@ are in [decisions](docs/decisions.md).
 | | Feature | Notes |
 |---|---|---|
 | 🟡 | Server TLS 1.3 | A certificate chain and key from PEM files, ALPN chosen by the server. |
-| 🔴 | SNI | A certificate per server name. |
+| 🔴 | SNI | A certificate per connection, from the server name and the offered ALPN protocols. |
 | 🔴 | Certificates swapped while running | New connections get the new certificate; open ones keep theirs. |
 | 🔴 | kTLS on Linux | The kernel takes the record layer after the handshake. |
-| 🔴 | Client TLS | For ACME, and for databases that ask for TLS. |
-| 🔴 | ACME | Certificates from Let's Encrypt through TLS-ALPN-01, renewed in the process. |
+| 🔴 | Client TLS | For an ACME directory, and for databases that ask for TLS. |
+| 🔴 | Keys, signatures, and certificates for ACME | An EC P-256 key, ES256 signing, a CSR, and the TLS-ALPN-01 challenge certificate. |
 
 A server built on goose-tls is meant to be its own reverse proxy: one binary that gets
 its certificates, terminates TLS, and serves, as well as running behind Caddy or nginx.
+ACME itself, which gets and renews the certificates, is a package of its own on top of
+goose-tls; the last four rows are what it needs from this one.
 
 ## Pins
 
