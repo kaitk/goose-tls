@@ -12,8 +12,56 @@ its expected work puts it, and delete an entry once the pin has its fix: git kee
 
 ## Bugs
 
-None yet.
+### Two first builds of a CMake package at once fail
+
+Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet.
+
+Two `goose build`s that run at once, for two programs importing the same package with a
+`cmake_target`, both configure the package's CMake build in the same directory under
+`~/.goose/build/pkg/` when neither finds it built, and one or both fail. Once it is
+built, parallel builds succeed. Five runs out of five failed from a cold cache, none
+from a warm one:
+
+```sh
+mkdir lib a b
+printf 'cmake_minimum_required(VERSION 3.20)\nproject(lib C)\nadd_library(lib_c STATIC one.c)\n' > lib/CMakeLists.txt
+echo 'int one(void) { return 1; }' > lib/one.c
+echo 'cmake_target = "lib_c";' > lib/lib.build
+printf 'namespace lib;\nextern fn one() -> i32;\n' > lib/lib.goose
+for d in a b; do
+    printf 'import std;\nimport lib from "../lib";\nfn main() { print(lib::one()); }\n' > $d/$d.goose
+done
+goose build -o a/a a/a.goose & goose build -o b/b b/b.goose; wait
+```
+
+```
+configuring the package lib with CMake failed (exit 1):
+CMake Error at .../CMakeDetermineSystem.cmake:231 (configure_file):
+  No such file or directory
+```
+
+A lock on the package's build directory while it builds would fix it. Workaround:
+`test/run_tests.py` builds its first test alone, then the rest in parallel.
 
 ## Feature requests
 
-None yet.
+### A sidecar can't name a library directory
+
+Found on `v2026.2` (`3ee3871`), 2026-10-19. Not reported yet.
+
+A sidecar's `c_libs` becomes `-l<name>`, and `c_include` takes absolute paths, but no
+key adds a library search path (`-L`, or `/LIBPATH` for MSVC), and `c_flags_cc` reaches
+only the compile. A library outside the C compiler's own paths, such as Homebrew's
+OpenSSL under `/opt/homebrew/opt/openssl@3/lib`, can't be linked through `c_sources`
+and `c_libs`:
+
+```goose
+// tls.build
+c_sources = ["shim/tls.c"];
+c_include_macos = ["/opt/homebrew/opt/openssl@3/include"];  // compiles
+c_libs = ["ssl", "crypto"];       // ld: library 'ssl' not found, on macOS
+```
+
+A `c_libdirs` key with platform suffixes, as `c_include` has, or `pkg-config` names,
+would do. Workaround: the shim is a CMake target, and `find_package(OpenSSL)` finds the
+library ([decisions](decisions.md)), at the cost of CMake as a build dependency.

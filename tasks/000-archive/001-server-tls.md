@@ -1,6 +1,6 @@
 # 001: Server TLS over OpenSSL 3
 
-Status: todo (2026-10-19)
+Status: done (2026-10-19)
 
 The first API: a server context from a PEM certificate chain and key, and a connection
 that takes the bytes the program read and returns the bytes to send. goose-http builds
@@ -40,9 +40,11 @@ profile:
 
 ## Acceptance criteria
 
-- [ ] The library and the platform linking recorded in `docs/decisions.md`
-- [ ] The API in `README.md`, and `docs/architecture.md` describing the byte flow
-- [ ] `openssl s_client` and `curl` complete a TLS 1.3 handshake against a test server
-      and get back what they sent, on macOS and Linux
-- [ ] HttpArena's four TLS checks above pass against a test server on port 8081
-- [ ] `scripts/test.sh` passes
+- [x] The library and the platform linking recorded in `docs/decisions.md`
+- [x] The API in `README.md`, and `docs/architecture.md` describing the byte flow
+- [x] `openssl s_client` and `curl` complete a TLS 1.3 handshake against a test server
+      and get back what they sent, on macOS and Linux (macOS arm64 with OpenSSL 3.6.5
+      and 4.0.3; Ubuntu 24.04 arm64 in Docker with 3.0.13; Windows not tried)
+- [x] HttpArena's four TLS checks above pass against a test server on port 8081
+      (`scripts/test-handshake.sh`)
+- [x] `scripts/test.sh` passes
