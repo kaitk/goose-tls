@@ -1,8 +1,7 @@
 # 002: kTLS on Linux
 
-Status: in-progress (the package's side is built and tested without a kTLS kernel,
-2026-10-19; a run on a kernel with kTLS, goose-http's loops, and the measurements are
-open)
+Status: in-progress (the package's side is built, 2026-10-19, and passes on a kernel
+with kTLS, 2026-10-20; goose-http's loops and the measurements are open)
 
 After the handshake, the kernel takes the record layer, so the program sends and
 receives plaintext on the socket, and `sendfile`, splice, and io_uring work again.
@@ -68,6 +67,25 @@ kTLS, and if it does, run the open kernel criteria there. On that machine:
 3. Without it, record the kernel and its `CONFIG_TLS` line here, and find another
    machine: a Linux VM or a cloud instance on 6.14 or later.
 
+### On the desktop (2026-10-20)
+
+The kernel has kTLS as a module: Ryzen 7 5800X3D, Ubuntu 26.04.1 LTS under WSL2,
+kernel `6.18.54.1-microsoft-standard-WSL2` with `CONFIG_TLS=m` (`# CONFIG_TLS_DEVICE
+is not set`). After `sudo modprobe tls`, `/proc/net/tls_stat` exists and
+`tcp_available_ulp` lists `tls`. `scripts/test.sh` at `1200d82`, Goose `v2026.2`,
+OpenSSL 3.5.5: every step passes. `scripts/test-handshake.sh` runs the kTLS part for the
+first time on a kernel that has it ("server: kernel tls: yes"):
+
+- s_client's two KeyUpdates, and every line echoed after them, both in user space and
+  over kTLS
+- over kTLS: the close with close_notify, both KeyUpdates through `kernel_record`, and
+  both directions taken by the kernel
+- curl `--http1.1` POST over kTLS gets its body back, and its connection went to the
+  kernel
+
+The shim's `setsockopt` calls, the keys, and the test server's `recvmsg` and `sendmsg`
+now run on a kernel, not only compile.
+
 ## Acceptance criteria
 
 - [x] goose-tls reports, per connection, whether the kernel took each direction
@@ -77,12 +95,9 @@ kTLS, and if it does, run the open kernel criteria there. On that machine:
       switch, on OpenSSL 3.0.13 (Ubuntu 24.04), 3.6.5, and 4.0.3 (`test/kernel/`)
 - [x] Off Linux, and on a Linux kernel without kTLS, connections stay in user space
       (`scripts/test-handshake.sh`)
-- [ ] A kTLS echo against `openssl s_client` and `curl` on a kernel with the `tls`
-      module, with a KeyUpdate each way from s_client and a close.
-      `scripts/test-handshake.sh` runs it there; Docker Desktop's kernel has no kTLS
-      ([development](../docs/development.md#a-kernel-with-ktls)), so the shim's
-      `setsockopt` calls and the test server's `recvmsg` and `sendmsg` have only been
-      compiled against Linux's headers, not run
+- [x] A kTLS echo against `openssl s_client` and `curl` on a kernel with the `tls`
+      module, with a KeyUpdate each way from s_client and a close
+      (`scripts/test-handshake.sh`, 2026-10-20, "On the desktop" below)
 - [ ] User-space TLS and kTLS compared on the echo on Linux, with how they were
       measured
 - [ ] goose-http serves HTTP/1.1 over kTLS on epoll and io_uring (waits for its
