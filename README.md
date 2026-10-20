@@ -34,7 +34,7 @@ OpenSSL's headers and libraries installed ([development](docs/development.md#ope
 
 ```goose
 import std;
-import tls from "github.com/kaitk/goose-tls@v0.0.1";
+import tls from "github.com/kaitk/goose-tls@v0.0.2";
 
 fn main() {
     let ctx, ok = tls::server_files("server.crt", "server.key", ["h2", "http/1.1"]);
@@ -60,7 +60,7 @@ fn main() {
 goose build server.goose
 ```
 
-The tag `v0.0.1` has everything in the table above.
+The tag `v0.0.2` has everything in the table above.
 
 `test/tools/echo_server.goose` is a whole server, and `test/tools/client.goose` a whole
 client, over blocking sockets of their own.
