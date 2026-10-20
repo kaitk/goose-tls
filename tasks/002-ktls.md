@@ -86,6 +86,18 @@ first time on a kernel that has it ("server: kernel tls: yes"):
 The shim's `setsockopt` calls, the keys, and the test server's `recvmsg` and `sendmsg`
 now run on a kernel, not only compile.
 
+### On bare metal (2026-10-20)
+
+The same on Linux without a hypervisor, asked for 2026-10-20: Ryzen 5 9600X (aes,
+vaes, avx2, avx512f, pclmulqdq), Bazzite 43, kernel `6.17.7-ba29.fc43.x86_64` with
+`CONFIG_TLS=m` and `CONFIG_TLS_DEVICE=y` (from `/proc/config.gz`; Bazzite has no
+`/boot/config-*`). After `sudo modprobe tls`, `tcp_available_ulp` lists `tls`. The
+kernel's highest-priority `gcm(aes)` is `generic-gcm-vaes-avx10_512` (800), and
+`rfc4106(gcm(aes))` `rfc4106-gcm-vaes-avx10_512` (800), above the `vaes-avx10_256`
+(700), `aesni-avx` (500), and `aesni` (400) drivers. `scripts/test.sh` at `d1b2644`,
+Goose `v2026.2`, OpenSSL 3.5.9, in a Fedora 43 distrobox: every step passes, the kTLS
+part included, with the same checks as on the desktop above.
+
 ## Acceptance criteria
 
 - [x] goose-tls reports, per connection, whether the kernel took each direction

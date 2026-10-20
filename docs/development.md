@@ -138,7 +138,9 @@ the kernel need Linux 6.14 or later, and on an older one (Ubuntu 24.04's 6.8, sa
 script checks a kTLS echo without them. WSL2's kernel has it as a module
 (`6.18.54.1-microsoft-standard-WSL2`, `CONFIG_TLS=m`), not loaded at boot: run `sudo
 modprobe tls` after each WSL restart, and every step of `scripts/test.sh` passes there,
-the kTLS part included (2026-10-20).
+the kTLS part included (2026-10-20). So does Bazzite 43's kernel on bare metal
+(`6.17.7-ba29.fc43.x86_64`, `CONFIG_TLS=m`, read from `/proc/config.gz`), after the
+same `sudo modprobe tls`, with the tests run in a Fedora 43 distrobox (2026-10-20).
 
 The handshake tests need `openssl`, `curl`, and `perl` (for a time limit, since macOS has
 no `timeout`). macOS's `curl` uses LibreSSL, which speaks TLS 1.3 and ALPN, so it serves.
