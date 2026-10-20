@@ -1,0 +1,202 @@
+# 2026-10-20T20:23Z 6.18.54.1-microsoft-standard-WSL2 16 CPUs:  AMD Ryzen 7 5800X3D 8-Core Processor
+# OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026); rustls-ffi v0.15.6, rustls 0.23.46, aws-lc-rs 1.18.2, ring 0.17.14; cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+run=0 provider=openssl groups=default mode=idle n=1000 heap_per_conn=28543 rss_per_conn=28557
+run=0 provider=openssl groups=x25519 mode=idle n=1000 heap_per_conn=21949 rss_per_conn=21950
+run=0 provider=aws-lc-rs groups=default mode=idle n=1000 heap_per_conn=7911 rss_per_conn=7930
+run=0 provider=aws-lc-rs groups=x25519 mode=idle n=1000 heap_per_conn=7890 rss_per_conn=8036
+run=0 provider=ring groups=x25519 mode=idle n=1000 heap_per_conn=7716 rss_per_conn=7782
+run=0 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 rss_per_conn=28532
+run=0 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21948 rss_per_conn=21951
+run=0 provider=aws-lc-rs groups=default mode=idle n=4000 heap_per_conn=7844 rss_per_conn=7856
+run=0 provider=aws-lc-rs groups=x25519 mode=idle n=4000 heap_per_conn=7840 rss_per_conn=8027
+run=0 provider=ring groups=x25519 mode=idle n=4000 heap_per_conn=7648 rss_per_conn=7724
+run=0 provider=openssl groups=default mode=inflight n=1000 heap_per_conn=58618 rss_per_conn=57184
+run=0 provider=openssl groups=x25519 mode=inflight n=1000 heap_per_conn=52051 rss_per_conn=50655
+run=0 provider=aws-lc-rs groups=default mode=inflight n=1000 heap_per_conn=8334 rss_per_conn=8303
+run=0 provider=aws-lc-rs groups=x25519 mode=inflight n=1000 heap_per_conn=8336 rss_per_conn=8307
+run=0 provider=ring groups=x25519 mode=inflight n=1000 heap_per_conn=8114 rss_per_conn=8241
+run=0 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58626 rss_per_conn=57246
+run=0 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 rss_per_conn=50677
+run=0 provider=aws-lc-rs groups=default mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8337
+run=0 provider=aws-lc-rs groups=x25519 mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8333
+run=0 provider=ring groups=x25519 mode=inflight n=4000 heap_per_conn=8108 rss_per_conn=8268
+run=0 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=727.7 server_hs_per_s=1374 wall_hs_per_s=938
+run=0 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=669.7 server_hs_per_s=1493 wall_hs_per_s=1138
+run=0 provider=aws-lc-rs groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=615.2 server_hs_per_s=1626 wall_hs_per_s=1033
+run=0 provider=aws-lc-rs groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=590.2 server_hs_per_s=1694 wall_hs_per_s=1226
+run=0 provider=ring groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=565.1 server_hs_per_s=1770 wall_hs_per_s=1269
+run=0 provider=openssl groups=default mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3700
+run=0 provider=openssl groups=x25519 mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3689
+run=0 provider=aws-lc-rs groups=default mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4464
+run=0 provider=aws-lc-rs groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4439
+run=0 provider=ring groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=7226
+run=0 provider=openssl groups=default mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3802
+run=0 provider=openssl groups=x25519 mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3848
+run=0 provider=aws-lc-rs groups=default mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3793
+run=0 provider=aws-lc-rs groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3787
+run=0 provider=ring groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=5696
+run=0 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.34 server_req_per_s=299403
+run=0 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.25 server_req_per_s=307312
+run=0 provider=aws-lc-rs groups=default mode=json n=200000 conns=1000 server_us_per_req=2.44 server_req_per_s=409936
+run=0 provider=aws-lc-rs groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.40 server_req_per_s=416838
+run=0 provider=ring groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=1.59 server_req_per_s=629172
+run=1 provider=openssl groups=x25519 mode=idle n=1000 heap_per_conn=21949 rss_per_conn=21950
+run=1 provider=aws-lc-rs groups=default mode=idle n=1000 heap_per_conn=7885 rss_per_conn=7901
+run=1 provider=aws-lc-rs groups=x25519 mode=idle n=1000 heap_per_conn=7916 rss_per_conn=8069
+run=1 provider=ring groups=x25519 mode=idle n=1000 heap_per_conn=7716 rss_per_conn=7791
+run=1 provider=openssl groups=default mode=idle n=1000 heap_per_conn=28543 rss_per_conn=28557
+run=1 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21948 rss_per_conn=21951
+run=1 provider=aws-lc-rs groups=default mode=idle n=4000 heap_per_conn=7845 rss_per_conn=7856
+run=1 provider=aws-lc-rs groups=x25519 mode=idle n=4000 heap_per_conn=7840 rss_per_conn=8037
+run=1 provider=ring groups=x25519 mode=idle n=4000 heap_per_conn=7647 rss_per_conn=7724
+run=1 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 rss_per_conn=28532
+run=1 provider=openssl groups=x25519 mode=inflight n=1000 heap_per_conn=52051 rss_per_conn=50659
+run=1 provider=aws-lc-rs groups=default mode=inflight n=1000 heap_per_conn=8334 rss_per_conn=8307
+run=1 provider=aws-lc-rs groups=x25519 mode=inflight n=1000 heap_per_conn=8336 rss_per_conn=8307
+run=1 provider=ring groups=x25519 mode=inflight n=1000 heap_per_conn=8114 rss_per_conn=8241
+run=1 provider=openssl groups=default mode=inflight n=1000 heap_per_conn=58618 rss_per_conn=57184
+run=1 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 rss_per_conn=50677
+run=1 provider=aws-lc-rs groups=default mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8337
+run=1 provider=aws-lc-rs groups=x25519 mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8332
+run=1 provider=ring groups=x25519 mode=inflight n=4000 heap_per_conn=8108 rss_per_conn=8268
+run=1 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58626 rss_per_conn=57246
+run=1 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=680.6 server_hs_per_s=1469 wall_hs_per_s=1118
+run=1 provider=aws-lc-rs groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=616.4 server_hs_per_s=1622 wall_hs_per_s=1031
+run=1 provider=aws-lc-rs groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=590.4 server_hs_per_s=1694 wall_hs_per_s=1224
+run=1 provider=ring groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=564.4 server_hs_per_s=1772 wall_hs_per_s=1271
+run=1 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=726.9 server_hs_per_s=1376 wall_hs_per_s=938
+run=1 provider=openssl groups=x25519 mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3696
+run=1 provider=aws-lc-rs groups=default mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4407
+run=1 provider=aws-lc-rs groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4432
+run=1 provider=ring groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=7232
+run=1 provider=openssl groups=default mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3719
+run=1 provider=openssl groups=x25519 mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3857
+run=1 provider=aws-lc-rs groups=default mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3805
+run=1 provider=aws-lc-rs groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3806
+run=1 provider=ring groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=5757
+run=1 provider=openssl groups=default mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3748
+run=1 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.32 server_req_per_s=300991
+run=1 provider=aws-lc-rs groups=default mode=json n=200000 conns=1000 server_us_per_req=2.40 server_req_per_s=416536
+run=1 provider=aws-lc-rs groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.46 server_req_per_s=405834
+run=1 provider=ring groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=1.59 server_req_per_s=628198
+run=1 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.30 server_req_per_s=302626
+run=2 provider=aws-lc-rs groups=default mode=idle n=1000 heap_per_conn=7879 rss_per_conn=7901
+run=2 provider=aws-lc-rs groups=x25519 mode=idle n=1000 heap_per_conn=7885 rss_per_conn=8004
+run=2 provider=ring groups=x25519 mode=idle n=1000 heap_per_conn=7716 rss_per_conn=7778
+run=2 provider=openssl groups=default mode=idle n=1000 heap_per_conn=28543 rss_per_conn=28557
+run=2 provider=openssl groups=x25519 mode=idle n=1000 heap_per_conn=21949 rss_per_conn=21950
+run=2 provider=aws-lc-rs groups=default mode=idle n=4000 heap_per_conn=7844 rss_per_conn=7856
+run=2 provider=aws-lc-rs groups=x25519 mode=idle n=4000 heap_per_conn=7840 rss_per_conn=8019
+run=2 provider=ring groups=x25519 mode=idle n=4000 heap_per_conn=7647 rss_per_conn=7725
+run=2 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 rss_per_conn=28532
+run=2 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21948 rss_per_conn=21949
+run=2 provider=aws-lc-rs groups=default mode=inflight n=1000 heap_per_conn=8334 rss_per_conn=8327
+run=2 provider=aws-lc-rs groups=x25519 mode=inflight n=1000 heap_per_conn=8336 rss_per_conn=8315
+run=2 provider=ring groups=x25519 mode=inflight n=1000 heap_per_conn=8114 rss_per_conn=8241
+run=2 provider=openssl groups=default mode=inflight n=1000 heap_per_conn=58618 rss_per_conn=57184
+run=2 provider=openssl groups=x25519 mode=inflight n=1000 heap_per_conn=52051 rss_per_conn=50655
+run=2 provider=aws-lc-rs groups=default mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8337
+run=2 provider=aws-lc-rs groups=x25519 mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8334
+run=2 provider=ring groups=x25519 mode=inflight n=4000 heap_per_conn=8108 rss_per_conn=8268
+run=2 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58626 rss_per_conn=57246
+run=2 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 rss_per_conn=50677
+run=2 provider=aws-lc-rs groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=615.1 server_hs_per_s=1626 wall_hs_per_s=1039
+run=2 provider=aws-lc-rs groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=594.4 server_hs_per_s=1682 wall_hs_per_s=1214
+run=2 provider=ring groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=562.7 server_hs_per_s=1777 wall_hs_per_s=1278
+run=2 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=728.3 server_hs_per_s=1373 wall_hs_per_s=936
+run=2 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=671.7 server_hs_per_s=1489 wall_hs_per_s=1134
+run=2 provider=aws-lc-rs groups=default mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4464
+run=2 provider=aws-lc-rs groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4472
+run=2 provider=ring groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=7176
+run=2 provider=openssl groups=default mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3719
+run=2 provider=openssl groups=x25519 mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3726
+run=2 provider=aws-lc-rs groups=default mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3808
+run=2 provider=aws-lc-rs groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3821
+run=2 provider=ring groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=5795
+run=2 provider=openssl groups=default mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3795
+run=2 provider=openssl groups=x25519 mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3796
+run=2 provider=aws-lc-rs groups=default mode=json n=200000 conns=1000 server_us_per_req=2.41 server_req_per_s=414943
+run=2 provider=aws-lc-rs groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=413406
+run=2 provider=ring groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=1.59 server_req_per_s=630287
+run=2 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.24 server_req_per_s=308762
+run=2 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.26 server_req_per_s=306864
+run=3 provider=aws-lc-rs groups=x25519 mode=idle n=1000 heap_per_conn=7884 rss_per_conn=7999
+run=3 provider=ring groups=x25519 mode=idle n=1000 heap_per_conn=7691 rss_per_conn=7758
+run=3 provider=openssl groups=default mode=idle n=1000 heap_per_conn=28543 rss_per_conn=28557
+run=3 provider=openssl groups=x25519 mode=idle n=1000 heap_per_conn=21949 rss_per_conn=21950
+run=3 provider=aws-lc-rs groups=default mode=idle n=1000 heap_per_conn=7910 rss_per_conn=7926
+run=3 provider=aws-lc-rs groups=x25519 mode=idle n=4000 heap_per_conn=7841 rss_per_conn=8038
+run=3 provider=ring groups=x25519 mode=idle n=4000 heap_per_conn=7648 rss_per_conn=7722
+run=3 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 rss_per_conn=28532
+run=3 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21948 rss_per_conn=21949
+run=3 provider=aws-lc-rs groups=default mode=idle n=4000 heap_per_conn=7844 rss_per_conn=7858
+run=3 provider=aws-lc-rs groups=x25519 mode=inflight n=1000 heap_per_conn=8336 rss_per_conn=8315
+run=3 provider=ring groups=x25519 mode=inflight n=1000 heap_per_conn=8114 rss_per_conn=8241
+run=3 provider=openssl groups=default mode=inflight n=1000 heap_per_conn=58618 rss_per_conn=57184
+run=3 provider=openssl groups=x25519 mode=inflight n=1000 heap_per_conn=52051 rss_per_conn=50655
+run=3 provider=aws-lc-rs groups=default mode=inflight n=1000 heap_per_conn=8333 rss_per_conn=8311
+run=3 provider=aws-lc-rs groups=x25519 mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8332
+run=3 provider=ring groups=x25519 mode=inflight n=4000 heap_per_conn=8108 rss_per_conn=8268
+run=3 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58626 rss_per_conn=57246
+run=3 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 rss_per_conn=50677
+run=3 provider=aws-lc-rs groups=default mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8339
+run=3 provider=aws-lc-rs groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=592.0 server_hs_per_s=1689 wall_hs_per_s=1221
+run=3 provider=ring groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=562.7 server_hs_per_s=1777 wall_hs_per_s=1275
+run=3 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=724.1 server_hs_per_s=1381 wall_hs_per_s=943
+run=3 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=671.0 server_hs_per_s=1490 wall_hs_per_s=1136
+run=3 provider=aws-lc-rs groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=611.3 server_hs_per_s=1636 wall_hs_per_s=1042
+run=3 provider=aws-lc-rs groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4467
+run=3 provider=ring groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=7203
+run=3 provider=openssl groups=default mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3696
+run=3 provider=openssl groups=x25519 mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3737
+run=3 provider=aws-lc-rs groups=default mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4473
+run=3 provider=aws-lc-rs groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3787
+run=3 provider=ring groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=5782
+run=3 provider=openssl groups=default mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3821
+run=3 provider=openssl groups=x25519 mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3812
+run=3 provider=aws-lc-rs groups=default mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3797
+run=3 provider=aws-lc-rs groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.41 server_req_per_s=415428
+run=3 provider=ring groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=1.60 server_req_per_s=625579
+run=3 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.28 server_req_per_s=305166
+run=3 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.28 server_req_per_s=305086
+run=3 provider=aws-lc-rs groups=default mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=413882
+run=4 provider=ring groups=x25519 mode=idle n=1000 heap_per_conn=7691 rss_per_conn=7762
+run=4 provider=openssl groups=default mode=idle n=1000 heap_per_conn=28543 rss_per_conn=28557
+run=4 provider=openssl groups=x25519 mode=idle n=1000 heap_per_conn=21949 rss_per_conn=21950
+run=4 provider=aws-lc-rs groups=default mode=idle n=1000 heap_per_conn=7887 rss_per_conn=7913
+run=4 provider=aws-lc-rs groups=x25519 mode=idle n=1000 heap_per_conn=7888 rss_per_conn=8049
+run=4 provider=ring groups=x25519 mode=idle n=4000 heap_per_conn=7648 rss_per_conn=7721
+run=4 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 rss_per_conn=28532
+run=4 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21948 rss_per_conn=21951
+run=4 provider=aws-lc-rs groups=default mode=idle n=4000 heap_per_conn=7845 rss_per_conn=7865
+run=4 provider=aws-lc-rs groups=x25519 mode=idle n=4000 heap_per_conn=7840 rss_per_conn=8011
+run=4 provider=ring groups=x25519 mode=inflight n=1000 heap_per_conn=8114 rss_per_conn=8241
+run=4 provider=openssl groups=default mode=inflight n=1000 heap_per_conn=58618 rss_per_conn=57184
+run=4 provider=openssl groups=x25519 mode=inflight n=1000 heap_per_conn=52051 rss_per_conn=50655
+run=4 provider=aws-lc-rs groups=default mode=inflight n=1000 heap_per_conn=8333 rss_per_conn=8315
+run=4 provider=aws-lc-rs groups=x25519 mode=inflight n=1000 heap_per_conn=8336 rss_per_conn=8307
+run=4 provider=ring groups=x25519 mode=inflight n=4000 heap_per_conn=8108 rss_per_conn=8268
+run=4 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58626 rss_per_conn=57246
+run=4 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 rss_per_conn=50677
+run=4 provider=aws-lc-rs groups=default mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8337
+run=4 provider=aws-lc-rs groups=x25519 mode=inflight n=4000 heap_per_conn=8336 rss_per_conn=8334
+run=4 provider=ring groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=561.7 server_hs_per_s=1780 wall_hs_per_s=1277
+run=4 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=725.1 server_hs_per_s=1379 wall_hs_per_s=940
+run=4 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=670.8 server_hs_per_s=1491 wall_hs_per_s=1136
+run=4 provider=aws-lc-rs groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=615.7 server_hs_per_s=1624 wall_hs_per_s=1032
+run=4 provider=aws-lc-rs groups=x25519 mode=hs n=3000 group=X25519 server_us_per_hs=592.8 server_hs_per_s=1687 wall_hs_per_s=1219
+run=4 provider=ring groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=7184
+run=4 provider=openssl groups=default mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3701
+run=4 provider=openssl groups=x25519 mode=enc mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3706
+run=4 provider=aws-lc-rs groups=default mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4440
+run=4 provider=aws-lc-rs groups=x25519 mode=enc mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=4448
+run=4 provider=ring groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=5832
+run=4 provider=openssl groups=default mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3826
+run=4 provider=openssl groups=x25519 mode=dec mib=2048 suite=TLS_AES_128_GCM_SHA256 mib_per_s=3852
+run=4 provider=aws-lc-rs groups=default mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3814
+run=4 provider=aws-lc-rs groups=x25519 mode=dec mib=2048 suite=TLS13_AES_128_GCM_SHA256 mib_per_s=3800
+run=4 provider=ring groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=1.60 server_req_per_s=624004
+run=4 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.25 server_req_per_s=308121
+run=4 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.27 server_req_per_s=305558
+run=4 provider=aws-lc-rs groups=default mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=413832
+run=4 provider=aws-lc-rs groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.47 server_req_per_s=404615
