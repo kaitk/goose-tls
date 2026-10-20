@@ -73,7 +73,9 @@ then close; `tls::error_text()` says what failed, in OpenSSL's words.
 
 The to-send BIO grows as the program writes, so the program sets its own limits: it
 drains as fast as the socket takes the bytes, and stops reading requests while the
-socket is backed up.
+socket is backed up. Each BIO frees its buffer once it's emptied, as OpenSSL does its
+record buffers, so between records a connection holds only OpenSSL's state
+([decisions](decisions.md)).
 
 ## ALPN
 

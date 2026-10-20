@@ -18,6 +18,7 @@
 #include <string.h>
 
 #include <openssl/bio.h>
+#include <openssl/buffer.h>
 #include <openssl/err.h>
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
@@ -211,6 +212,21 @@ int64_t tls_context_share(int64_t h) {
 /* Drops one reference; connections made from it keep theirs. */
 void tls_context_free(int64_t h) {
     SSL_CTX_free((SSL_CTX *)(intptr_t)h);
+}
+
+/* Frees an emptied memory BIO's buffer, which otherwise keeps the size of the
+   most it has held, for as long as the connection lives: SSL_MODE_RELEASE_BUFFERS
+   does the same for the record layer's. It frees the data itself, since
+   BUF_MEM_free would cleanse all of it, a cost on every response, and it held
+   only records; setting the emptied BUF_MEM again resets the BIO's view of it. */
+static void release_empty(BIO *b) {
+    BUF_MEM *bm = NULL;
+    if (BIO_ctrl_pending(b) != 0 || BIO_get_mem_ptr(b, &bm) <= 0 || !bm || bm->max == 0) return;
+    OPENSSL_free(bm->data);
+    bm->data = NULL;
+    bm->length = bm->max = 0;
+    BIO_set_close(b, BIO_NOCLOSE);
+    BIO_set_mem_buf(b, bm, BIO_CLOSE);
 }
 
 /* A connection from the context, with its two memory BIOs; NULL on
@@ -413,6 +429,7 @@ int64_t tls_drain(int64_t h, tls_buf buf) {
     if (!ssl || buf.len <= 0) return 0;
     int64_t n = buf.len > INT32_MAX ? INT32_MAX : buf.len;
     int r = BIO_read(SSL_get_wbio(ssl), buf.data, (int)n);
+    release_empty(SSL_get_wbio(ssl));
     return r > 0 ? r : 0;
 }
 
@@ -446,7 +463,9 @@ int64_t tls_handshake(int64_t h) {
     SSL *ssl = (SSL *)(intptr_t)h;
     if (!ssl) return TLS_FAILED;
     int r = SSL_do_handshake(ssl);
-    return r == 1 ? 0 : status_of(ssl, r);
+    int64_t s = r == 1 ? 0 : status_of(ssl, r);
+    release_empty(SSL_get_rbio(ssl));
+    return s;
 }
 
 /* Decrypts into buf: the count, more than 0, or TLS_WANT_INPUT, TLS_CLOSED,
@@ -457,7 +476,9 @@ int64_t tls_read(int64_t h, tls_buf buf) {
     if (!ssl || buf.len <= 0 || ktls_owns(ssl, KTLS_RX)) return TLS_FAILED;
     size_t n = 0;
     int r = SSL_read_ex(ssl, buf.data, (size_t)buf.len, &n);
-    return r == 1 ? (int64_t)n : status_of(ssl, r);
+    int64_t s = r == 1 ? (int64_t)n : status_of(ssl, r);
+    release_empty(SSL_get_rbio(ssl));
+    return s;
 }
 
 /* Encrypts all of data into the bytes to send: data.len, or TLS_WANT_INPUT

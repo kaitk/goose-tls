@@ -146,3 +146,20 @@ with its reason and the trade-off that matters.
   the only one it accepts. The trade-off: a program that makes a key writes it into a
   variable outside `run`'s block, and `key_generate` takes an argument with one valid
   value.
+- **A connection keeps no buffers between records (2026-10-20).** OpenSSL frees its
+  record buffers once they're empty (`SSL_MODE_RELEASE_BUFFERS`, set on every context
+  since the first shim), and the shim frees each memory BIO's buffer once it's empty:
+  the to-send one in `tls_drain`, the received one in `tls_read` and `tls_handshake`.
+  A memory BIO's buffer otherwise keeps the size of the most it has held: on
+  HttpArena's json-tls, whose largest response is 8.5 KB, the two held 11 KB a
+  connection, nearly a third of what OpenSSL holds for it. The shim frees the data itself
+  rather than through `BUF_MEM_free`, which cleanses the whole buffer, since the BIOs
+  hold only records. Measured on goose-http's TLS server (its task 058): an idle
+  connection fell from 35.8 KB to 30.4 KB, and the peak under load by about 10 MiB at
+  4,096 connections. Rejected: freeing through `BUF_MEM_free`, which cost 6.7% more
+  instructions a request. The trade-off: 2.6% more instructions a request, for a
+  `malloc` and a `free` of each buffer, with no loss of rate beyond the runs' spread.
+  What remains is OpenSSL's, with no setting to reduce it: the connection and its two
+  record layers (14 KB), the client's ML-KEM key share, kept until the connection is
+  freed (6 KB), and during the handshake a 21.8 KB message buffer and an 8 KB
+  buffering BIO.

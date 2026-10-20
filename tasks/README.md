@@ -50,5 +50,7 @@ HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, is
 progress: the package's side is built, and what remains needs a Linux kernel with kTLS
 and goose-http's `http.tls` module. Task 003, done, added the hooks an outside ACME
 package needs (goose-rest's task 049): a certificate per connection, a certificate
-swapped while running, client TLS, and the crypto for ACME.
+swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
+connection's memory BIO buffers once they're empty (goose-http's task 058); a release
+with it is open.
 
