@@ -213,7 +213,23 @@ The decisions above stay in force until these land.
   Rejected: rustls-ffi, which the spike used, since it sets no key-exchange groups,
   exports no secrets for kTLS, has no stateless tickets, and its `read_tls` refuses
   input while 16 KB of plaintext waits, so `tls::feed` couldn't take everything; and
-  staying on OpenSSL, for its memory. The trade-offs: a server now fails a client whose ALPN offers none of its
-  protocols, as RFC 7301 asks, where OpenSSL's answered without ALPN; building from
-  source needs a Rust toolchain, which prebuilt libraries in each release take away for
-  the platforms they cover; and a program can link only one Rust static library.
+  staying on OpenSSL, for its memory. The trade-offs: a server now fails a client whose
+  ALPN offers none of its protocols with `no_application_protocol`, as RFC 7301 asks,
+  where OpenSSL's answered without ALPN (agreed 2026-10-21); and building from source
+  needs a Rust toolchain, which prebuilt libraries in each release take away for the
+  platforms they cover.
+
+  The provider is aws-lc-rs, with X25519MLKEM768 first, and ring a cargo feature
+  (agreed 2026-10-21). It is chosen again after the measurement through goose-http;
+  before relying on ring, which ran AES-GCM much faster in spike 01, find out why.
+
+  Only the package's C functions, `tls_*`, are global in its library (agreed
+  2026-10-21). After cargo builds it, the build makes every other symbol local, Rust's
+  `std`, `core`, `alloc`, `compiler_builtins`, and `rust_eh_personality` among them, so
+  that two Rust packages each link their own copy of `std` into one program: on Linux
+  with `ld -r` into one object and `objcopy --keep-global-symbol` (or a version
+  script), on macOS with `ld -r -exported_symbols_list`. On Windows (MSVC) a `.lib` has
+  no clean way to do it, and it stays open: likely a DLL there, or the limit accepted.
+  Rejected: a `cdylib` per package, a shared library shipped with every program; and
+  one static library per program combining every Rust package, made by the build,
+  which needs Goose's package build to change.

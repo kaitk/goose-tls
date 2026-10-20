@@ -71,7 +71,7 @@ a client offering only protocols the server lacks now fails (1).
 
 - **A Rust crate in `rust/`**, built as a `staticlib`, that exports the C functions
   `tls.goose` declares today, by the same names and signatures. `tls.goose` keeps its
-  41 externs; only `library()`'s text and the error texts change. The crate sits
+  43 externs; only `library()`'s text and the error texts change. The crate sits
   beside `shim/` until the C goes, and is named for its toolchain: cargo builds it, and
   `CMakeLists.txt` finds its `Cargo.toml` there.
 - **Handles stay raw pointers** ([decisions](../docs/decisions.md), "Handles are raw
@@ -100,16 +100,19 @@ a client offering only protocols the server lacks now fails (1).
   context. ring is a cargo feature beside it: it has no ML-KEM, but its AES-GCM ran
   95% faster than OpenSSL's on the desktop's Zen 3, and its json-like request cost
   1.59 µs against aws-lc-rs's 2.42 µs (spike 01, not yet explained). HttpArena's Rust
-  entries use ring. aws-lc-rs stays the default unless the measurement through
-  goose-http shows ring's lead there too; then the choice between ML-KEM and that CPU
-  is the maintainer's.
+  entries use ring. Agreed 2026-10-21: aws-lc-rs is the default, with ML-KEM first,
+  and ring a cargo feature. The choice is made again after the measurement through
+  goose-http, and before relying on ring's lead, find out why its AES-GCM was so much
+  faster in spike 01: which assembly each library picks on that CPU.
 - **Session tickets**: two stateless TLS 1.3 tickets from rustls's `Ticketer`, as the
   shim's OpenSSL sends them today. rustls's default, a stateful cache of 256 sessions,
   would keep state per session in the server.
-- **ALPN with no match** fails the handshake (claim 1). Keeping the shim's behavior
-  would need a parse of every ClientHello before rustls sees it; HttpArena allows
-  selecting none, and its clients offer what the server speaks. `docs/architecture.md`
-  changes to say so when the switch lands.
+- **ALPN with no match** fails the handshake with `no_application_protocol`, as RFC
+  7301 asks (claim 1); agreed 2026-10-21. It's a change from the shim, which answers
+  without ALPN. Keeping the shim's behavior would need a parse of every ClientHello
+  before rustls sees it; HttpArena allows selecting none, and its clients offer what
+  the server speaks. A test that expects the old behavior changes with the step that
+  reaches it, and `docs/architecture.md`'s ALPN section changes when the switch lands.
 - **kTLS** (`shim/ktls.c`, 521 lines): the HKDF, the keylog and message callbacks, and
   the record counting go; `dangerous_into_kernel_connection` gives each direction's key,
   IV, and sequence number, and `KernelConnection` the keys after each KeyUpdate. What
@@ -155,16 +158,34 @@ a client offering only protocols the server lacks now fails (1).
   `scripts/goose.sh` does for Goose, and falls back to cargo where there's none. That
   answers the reason rustls-ffi was rejected on 2026-10-19 ("needs a Rust toolchain to
   build").
-- A program can link only one Rust static library: two would each carry Rust's standard
-  library. A second Goose package in Rust would have to share this one.
+- **Only the package's C functions are global** (agreed 2026-10-21). A Rust static
+  library carries Rust's standard library, so two in one program, say goose-tls and one
+  day goose-hash, would collide on `std`, `core`, `alloc`, `compiler_builtins`, and
+  `rust_eh_personality`. After cargo builds the library, a step in `CMakeLists.txt`
+  leaves only the `tls_*` symbols global, the ones `tls.goose` and `glue.c` call, and
+  makes everything else local, so each Rust package links its own private copy of
+  `std` beside the others:
+  - Linux: `ld -r --whole-archive` into one object, then `objcopy -w
+    --keep-global-symbol='tls_*'` (or a version script), and `ar` back into the
+    library.
+  - macOS: `ld -r -exported_symbols_list` with the same list.
+  - Windows (MSVC): open. A `.lib` has no clean way to make symbols local; the likely
+    answers are a DLL there, or accepting the limit on Windows.
+
+  The prebuilt libraries in a release are the localized ones. Rejected: a `cdylib` per
+  package, a shared library shipped beside every program; and one static library per
+  program, combining every Rust package, made by the build, which needs Goose's package
+  build to change.
 
 ## Order of work
 
 1. The server's connections (this branch): a context from PEM with ALPN, `accept`,
    `feed`, `handshake`, `read`, `write`, `drain`, `pending`, `shutdown`, `free`,
    `error_text`, `version`, `cipher`, `alpn`, and `share`; every other export a stub
-   that fails, so that `tls.goose` links. The CMake build, and `test/conn/hello.goose`
-   and `test/context/load.goose`.
+   that fails, so that `tls.goose` links. The CMake build, with the step that makes all
+   but the `tls_*` symbols local, and `test/conn/hello.goose` and
+   `test/context/load.goose`. A test that links two Rust static libraries, each
+   exporting its own C functions, into one program.
 2. A context chosen per connection (`Acceptor`); `choose.goose` and `replace.goose`.
 3. The client, with both verifiers; `client.goose`, and the client part of
    `scripts/test-handshake.sh`.
@@ -194,5 +215,11 @@ a client offering only protocols the server lacks now fails (1).
       (the client, `choose_context` and its calls, the crypto)
 - [ ] A program builds without a Rust toolchain from a release's prebuilt library on
       Linux x86-64, and from source with cargo
+- [ ] Two Rust static libraries, each exporting different C functions and built as
+      this one is, link into one Goose program (or one C program) and both work, on
+      Linux and macOS; only their C functions are global (`nm`). Windows recorded as
+      open, or solved
+- [ ] The provider chosen again after the measurement through goose-http, with why
+      ring's AES-GCM ran faster than aws-lc-rs's in spike 01 found first
 - [ ] `docs/decisions.md` settles the decision, and the README, architecture, and
       development pages describe the library as it is
