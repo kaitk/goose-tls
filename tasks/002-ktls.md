@@ -100,9 +100,10 @@ now run on a kernel, not only compile.
       (`scripts/test-handshake.sh`, 2026-10-20, "On the desktop" below)
 - [ ] User-space TLS and kTLS compared on the echo on Linux, with how they were
       measured
-- [ ] goose-http serves HTTP/1.1 over kTLS on epoll and io_uring (waits for its
-      `http.tls` module)
-- [ ] User-space TLS and kTLS compared through goose-http on Linux, with how they were
-      measured
+- [ ] goose-http serves HTTP/1.1 over kTLS on epoll and io_uring: on epoll since
+      2026-10-20 (goose-http `9a6b652b`, its task 014.02); io_uring remains
+- [x] User-space TLS and kTLS compared through goose-http on Linux, with how they were
+      measured (goose-http's task 014.02, item 3, 2026-10-20: even on `/json`, kTLS
+      at half the rate on 16 KB responses, where the kernel's AES-GCM costs more)
 - [x] `scripts/test.sh` passes on macOS and in the Linux container, with a test that a
       KeyUpdate doesn't break a kTLS connection (`test/kernel/switch.goose`)
