@@ -52,5 +52,6 @@ and goose-http's `http.tls` module. Task 003, done, added the hooks an outside A
 package needs (goose-rest's task 049): a certificate per connection, a certificate
 swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
 connection's memory BIO buffers once they're empty (goose-http's task 058); a release
-with it is open.
+with it is open. Task 005, done, measured rustls against OpenSSL (spike 01): rustls
+used under a third of the memory per connection, and less CPU.
 
