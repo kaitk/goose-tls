@@ -531,6 +531,29 @@ void tls_cipher(int64_t h, gs_rref out) {
         append_str(out, SSL_CIPHER_standard_name(SSL_get_current_cipher(ssl)));
 }
 
+/* The key exchange group once negotiated, such as X25519MLKEM768. */
+void tls_group(int64_t h, gs_rref out) {
+    SSL *ssl = (SSL *)(intptr_t)h;
+    if (!ssl || !SSL_is_init_finished(ssl)) return;
+    const char *name = SSL_group_to_name(ssl, SSL_get_negotiated_group(ssl));
+    if (name) append_str(out, name);
+}
+
+/* Sets the key exchange groups the context's connections offer or accept, in
+   order of preference: OpenSSL's names joined by ':'. 1, or 0 with the
+   context unchanged when OpenSSL doesn't know a name. Call it before the
+   context accepts or connects, as for tls_kernel_enable. */
+uint8_t tls_use_groups(int64_t h, tls_bytes names) {
+    ERR_clear_error();
+    SSL_CTX *ctx = (SSL_CTX *)(intptr_t)h;
+    char list[1024];
+    if (!ctx || names.len <= 0 || names.len >= (int64_t)sizeof list) return 0;
+    if (memchr(names.data, 0, (size_t)names.len)) return 0;
+    memcpy(list, names.data, (size_t)names.len);
+    list[names.len] = 0;
+    return SSL_CTX_set1_groups_list(ctx, list) == 1;
+}
+
 /* The peer's certificate, its leaf, as PEM, once the handshake has it. */
 void tls_peer_certificate(int64_t h, gs_rref out) {
     SSL *ssl = (SSL *)(intptr_t)h;

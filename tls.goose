@@ -90,6 +90,8 @@ extern "tls_shutdown" fn shutdown_c(id: i64) -> i64;
 extern "tls_alpn_selected" fn alpn_c(id: i64, out: u8[>..]&);
 extern "tls_version" fn version_c(id: i64, out: u8[>..]&);
 extern "tls_cipher" fn cipher_c(id: i64, out: u8[>..]&);
+extern "tls_group" fn group_c(id: i64, out: u8[>..]&);
+extern "tls_use_groups" fn use_groups_c(ctx: i64, names: const u8[:]) -> bool;
 extern "tls_error_text" fn error_text_c(out: u8[>..]&);
 extern "tls_library" fn library_c(out: u8[>..]&);
 extern "tls_kernel_supported" fn kernel_supported_c() -> bool;
@@ -168,6 +170,15 @@ fn client_trusting(ca: const u8[:], protocols: const u8[:][:]) -> Context, bool 
 // whichever frees last frees it. Atomic, so any thread can share or free while
 // others accept from it. Not ok when ctx isn't.
 fn share(ctx: Context) -> Context { Context { id: share_c(ctx.id) } }
+
+// Sets the key exchange groups the connections of ctx offer or accept, in
+// order of preference: OpenSSL's names joined by ':', such as
+// "X25519:P-256:P-384". Without it a context takes OpenSSL's default, which
+// from OpenSSL 3.5 puts X25519MLKEM768 first: a hybrid that also protects the
+// keys against a later quantum computer, at about 6 KB more per connection.
+// False, with ctx unchanged, when OpenSSL doesn't know a name. Call it
+// before ctx accepts or connects.
+fn use_groups(ctx: Context, names: const u8[:]) -> bool { use_groups_c(ctx.id, names) }
 
 // server, with the chain and key read from PEM files. False also when a file
 // can't be read.
@@ -295,6 +306,14 @@ fn version(c: Conn) -> u8[>..] {
 fn cipher(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
     cipher_c(c.id, s);
+    return s;
+}
+
+// The key exchange group once the handshake is done, in OpenSSL's spelling,
+// such as "X25519MLKEM768", "x25519", or "secp256r1"; "" before.
+fn group(c: Conn) -> u8[>..] {
+    var s: u8[>..] = [];
+    group_c(c.id, s);
     return s;
 }
 

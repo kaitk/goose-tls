@@ -34,7 +34,7 @@ OpenSSL's headers and libraries installed ([development](docs/development.md#ope
 
 ```goose
 import std;
-import tls from "github.com/kaitk/goose-tls@v0.0.2";
+import tls from "github.com/kaitk/goose-tls@v0.0.3";
 
 fn main() {
     let ctx, ok = tls::server_files("server.crt", "server.key", ["h2", "http/1.1"]);
@@ -60,7 +60,7 @@ fn main() {
 goose build server.goose
 ```
 
-The tag `v0.0.2` has everything in the table above.
+The tag `v0.0.3` has everything in the table above.
 
 `test/tools/echo_server.goose` is a whole server, and `test/tools/client.goose` a whole
 client, over blocking sockets of their own.
@@ -87,7 +87,8 @@ All of it is in `tls.goose`, in the `tls` namespace.
 | `drain(c, buf) -> i64` | Copies bytes to send into `buf`, and returns how many; 0 when none wait |
 | `pending(c) -> i64` | How many bytes wait for `drain` |
 | `shutdown(c) -> i64` | Queues close_notify for `drain`: 0, or `FAILED` |
-| `alpn(c)`, `version(c)`, `cipher(c)` | The negotiated protocol, version, and suite; "" before the handshake |
+| `alpn(c)`, `version(c)`, `cipher(c)`, `group(c)` | The negotiated protocol, version, suite, and key exchange group; "" before the handshake |
+| `use_groups(ctx, names) -> bool` | Sets the key exchange groups, such as `"X25519:P-256:P-384"`, before the context's first connection; OpenSSL's default otherwise, X25519MLKEM768 first from 3.5 |
 | `peer_certificate(c)` | The peer's certificate as PEM; "" for none |
 | `error_text()` | Why the last call on this thread failed, in OpenSSL's words |
 | `library()` | The OpenSSL the program runs with |

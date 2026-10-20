@@ -18,7 +18,8 @@ How goose-tls works, for programs that use it. Why it works this way is in
 ## Contexts and connections
 
 A `tls::Context` is a server's or a client's configuration: OpenSSL's `SSL_CTX`, with
-TLS 1.3 only and its three suites, and the ALPN protocols. A server's holds its
+TLS 1.3 only and its three suites, the key exchange groups (OpenSSL's default, or
+those `tls::use_groups` sets), and the ALPN protocols. A server's holds its
 certificate chain and key, and chooses the suite in its own order; `tls::server` makes
 one from PEM text, and `tls::server_files` from PEM files. A client's holds the
 certificates it trusts ([Client TLS](#client-tls)).

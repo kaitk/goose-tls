@@ -95,6 +95,16 @@ with its reason and the trade-off that matters.
   where the CPU has AES instructions, which HttpArena's 8gbit profile scores. The
   trade-off: clients older than TLS 1.3 (before about 2018) can't connect, which a
   server behind a proxy never sees. A setting for TLS 1.2 can come when a user needs it.
+- **Key exchange: OpenSSL's default groups unless the program sets them (2026-10-20).**
+  A context offers what OpenSSL does, which from 3.5 puts the hybrid X25519MLKEM768
+  first, so traffic recorded today stays safe from a later quantum computer.
+  `tls::use_groups(ctx, names)` sets the groups and their order, and `tls::group(c)`
+  reports the one negotiated. Post-quantum stays the default for real servers. A
+  program can choose X25519 alone when it wants the smaller handshake and the 6 KB
+  less a connection holds, as goose-http's HttpArena entry does to match the Rust
+  entries, whose rustls with the `ring` provider offers X25519, P-256, and P-384.
+  Rejected: X25519 by default, which would drop the post-quantum protection browsers
+  now expect.
 - **PEM text in, files read in Goose (2026-10-19).** A context is made from the chain's
   and key's PEM bytes, and `tls::server_files` reads the files with Goose's `os` module.
   A certificate that an ACME package gets, or one that replaces another while the server
