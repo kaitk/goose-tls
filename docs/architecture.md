@@ -3,6 +3,9 @@
 How goose-tls works, for programs that use it. Why it works this way is in
 [decisions](decisions.md).
 
+This page describes the package over OpenSSL. A move to a Rust library over rustls,
+with the same API, is under way (task 006); until it lands, everything here holds.
+
 ## The parts
 
 - `tls.goose`, the `tls` namespace: the API. It builds the ALPN list's wire format,

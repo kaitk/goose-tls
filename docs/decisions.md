@@ -173,3 +173,47 @@ with its reason and the trade-off that matters.
   record layers (14 KB), the client's ML-KEM key share, kept until the connection is
   freed (6 KB), and during the handshake a 21.8 KB message buffer and an 8 KB
   buffering BIO.
+
+## Agreed, pending measurement
+
+The decisions above stay in force until these land.
+
+- **Connections over our own Rust library on rustls (2026-10-20; agreed, pending the
+  CPU measurement).** goose-tls's TLS moves from OpenSSL to a Rust crate in this
+  repository, over rustls with the aws-lc-rs provider, built as a static library that
+  exports the C functions `tls.goose` declares today. OpenSSL holds about 30 KB an idle
+  connection and 63 KB a handshake in flight, with no setting to reduce either, and
+  goose-http's TLS server used the most memory of the json-tls entries measured
+  (272 MiB against 152-188 MiB for the Rust ones, goose-http's tasks 014.02 and 058).
+  Spike 01 (task 005) measured rustls at 7.8 KB an idle connection against 28.5 KB, and
+  8.3 KB a handshake in flight against 58.6 KB, with 15% less server CPU a handshake
+  and 26% less a request. It becomes settled once this library, through goose-http,
+  shows the same or better CPU and less memory, measured as task 006 says; if CPU is
+  worse, it comes back here with the numbers. The design, and the rustls APIs it rests
+  on, checked against their sources, are in task 006. It replaces:
+  - "OpenSSL, through its 3.0 API": the library is rustls, with aws-lc-rs's
+    cryptography; OpenSSL is needed only by the tests' peer and command-line checks.
+  - "No I/O in the package" keeps its meaning, but the memory BIOs give way to buffers
+    the crate owns around rustls's unbuffered connection, freed once empty, as "A
+    connection keeps no buffers between records" frees the BIOs'.
+  - "Linked through a CMake target": `goose_tls` stays the target, and builds the crate
+    with cargo, or takes a release's prebuilt library, instead of finding OpenSSL.
+  - "The kernel's keys from OpenSSL's public callbacks": rustls gives each direction's
+    key, IV, and sequence number at the handoff, and the next keys after a KeyUpdate
+    (`dangerous_into_kernel_connection`, `KernelConnection`), so the HKDF, the
+    callbacks, and the record counting go; both directions move to the kernel together.
+  - "A client verifies against OpenSSL's store or the program's certificates": the
+    system's store through `rustls-platform-verifier`, which is the platform's own on
+    macOS and Windows, or the program's certificates.
+  - "The context is chosen in Goose, at a paused handshake" keeps its API: rustls's
+    `Acceptor` pauses at the ClientHello in place of OpenSSL's client hello callback.
+  - "ACME's crypto in its protocols' forms" keeps its forms, made with rcgen and
+    aws-lc-rs instead of OpenSSL.
+
+  Rejected: rustls-ffi, which the spike used, since it sets no key-exchange groups,
+  exports no secrets for kTLS, has no stateless tickets, and its `read_tls` refuses
+  input while 16 KB of plaintext waits, so `tls::feed` couldn't take everything; and
+  staying on OpenSSL, for its memory. The trade-offs: a server now fails a client whose ALPN offers none of its
+  protocols, as RFC 7301 asks, where OpenSSL's answered without ALPN; building from
+  source needs a Rust toolchain, which prebuilt libraries in each release take away for
+  the platforms they cover; and a program can link only one Rust static library.

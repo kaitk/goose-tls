@@ -53,5 +53,8 @@ package needs (goose-rest's task 049): a certificate per connection, a certifica
 swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
 connection's memory BIO buffers once they're empty (goose-http's task 058); a release
 with it is open. Task 005, done, measured rustls against OpenSSL (spike 01): rustls
-used under a third of the memory per connection, and less CPU.
+used under a third of the memory per connection, and less CPU. Task 006 builds on it:
+connections move from OpenSSL to a Rust library of the package's own over rustls, agreed
+pending the library's own CPU measurement, and replace the OpenSSL parts of tasks 001
+to 004 once it lands.
 
