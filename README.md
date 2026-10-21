@@ -160,7 +160,7 @@ tasks/               task tracking (tasks/README.md)
 
 | What | Pin | Why |
 |---|---|---|
-| Goose compiler | `aardappel/goose` release `v2026.2` (`3ee3871`), which the scripts fetch ([setup](docs/development.md#set-up-the-goose-compiler)) | An official release builds the same on every platform; a commit is pinned only for a fix not yet released |
+| Goose compiler | `aardappel/goose` release `v2026.3` (`8511ae3`), which the scripts fetch ([setup](docs/development.md#set-up-the-goose-compiler)) | An official release builds the same on every platform; a commit is pinned only for a fix not yet released |
 | OpenSSL | 3.0 or later: the system's on Linux, Homebrew's `openssl@3` on macOS ([development](docs/development.md#openssl)) | 3.0 is what HttpArena's base images ship ([decisions](docs/decisions.md)) |
 
 Move the pin in its own commit, with the tests that still hold
