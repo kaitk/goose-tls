@@ -31,22 +31,23 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 ## Performance
 
 The Goose server against libssl's, per server connection, with session tickets on
-(task 007, [spike 02](spikes/02-goose-server/README.md#with-session-tickets)):
+(task 007, [the server's overhead cut](tasks/007-goose-server/README.md#the-servers-overhead-cut)):
 
 | | Goose server | libssl |
 |---|---:|---:|
-| Idle, 4,000 held | 2,930 B | 28,528 B |
-| Handshake in flight, flight drained, 4,000 held | 3,807 B | 58,627 B |
-| Server CPU, full handshake, two tickets sent | 648.8 µs | 721.4 µs |
-| Server CPU, resumed handshake | 150.5 µs | 207.0 µs |
-| Server CPU, json-like request | 2.42 µs | 3.32 µs |
+| Idle, 4,000 held | 2,917 B | 28,528 B |
+| Handshake in flight, flight drained, 4,000 held | 3,806 B | 58,626 B |
+| Server CPU, full handshake, two tickets sent | 632.3 µs | 723.7 µs |
+| Server CPU, resumed handshake | 131.9 µs | 206.5 µs |
+| Server CPU, json-like request | 2.23 µs | 3.35 µs |
 
 Measured 2026-10-22 on a Ryzen 7 5800X3D, Ubuntu 26.04 in WSL2 (kernel
-6.18.54.1), OpenSSL 3.5.5, Goose v2026.3, goose-tls `9bc8238`: one process with
+6.18.54.1), OpenSSL 3.5.5, Goose v2026.3, goose-tls `36b4b9b`: one process with
 in-memory OpenSSL clients, X25519MLKEM768, RSA-2048, each figure the median of 5
-interleaved runs pinned to one CPU. The RSA signature is most of a full handshake on
-either server. Not yet measured: a server process under load over the network
-(task 007, step 7).
+interleaved runs pinned to one CPU. `v0.0.4` measured 648.8 µs, 150.5 µs, and 2.42 µs
+for the three CPU figures, and memory within 14 B of these. The RSA signature is most of a full
+handshake on either server. Not yet measured: a server process under load over the
+network (task 007, step 7).
 
 ## Quick start
 

@@ -147,8 +147,18 @@ What the plan left to the spike, as built:
   expected Finished and both application secrets when it sends its flight, and frees
   the transcript then. A handshake in flight holds two secrets and a key, not a hash
   context.
-- **Plaintext before verification stays private.** A record decrypts into the
-  connection's plaintext queue and is counted there only once its tag verifies.
+- **Plaintext before verification stays private.** A record decrypts in place, in the
+  bytes received, and is read as plaintext only once its tag verifies; a record that
+  fails is wiped there. It stays at the front of those bytes until its plaintext is
+  read, and Goose sees the bytes received from after it (2026-10-22, before which
+  plaintext had a queue of its own).
+- **The key schedule's HKDF is HMAC on one reused context** (2026-10-22,
+  [decisions](../../docs/decisions.md)). One HMAC context, with the suite's hash set
+  once, serves the handshake's derivations: Extract is one HMAC, Expand one HMAC block.
+  It is made on first use and freed with the transcript, and again when the handshake
+  ends, so a handshake waiting for the client holds none. Before, each derivation made
+  OpenSSL's HKDF context, which fetched the digest by name and made an HMAC context of
+  its own.
 
 ## Choices made where the plan is ambiguous
 
@@ -263,6 +273,7 @@ server differs.
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
 | goose-tls | `macos-check` | The scripts' fixes for macOS and its results ([macOS](#macos)), from `goose-server` |
 | goose-http | `no-ktls` | kTLS's handoff removed (`d328c93b`), from its `main` |
+| goose-tls | `perf-overhead` | [The server's overhead cut](#the-servers-overhead-cut), from `main` at `68e7364`; not merged |
 
 ## Measurements
 
@@ -294,6 +305,97 @@ X25519MLKEM768:
 
 Tickets add no idle memory to the Goose server and 65 B to a handshake in flight; the
 full handshake costs 10 µs more with them, OpenSSL's 31 µs, from runs an hour apart.
+
+### The server's overhead cut
+
+Done 2026-10-22 on the branch `perf-overhead`, from a profile, to cut the server's CPU
+per request and per handshake without adding idle memory. Each change is its own
+commit:
+
+- `a8b0c62`: each read, write, and handshake call cleared OpenSSL's error queue, which
+  sweeps all 16 slots; it now clears only a queue that holds an error. 5% of a json-like
+  request.
+- `ea6d06b`, then `36b4b9b`: the key schedule reused one HKDF context per handshake,
+  then became HMAC on one reused context ([decisions](../../docs/decisions.md), allowed
+  by the maintainer on 2026-10-22). OpenSSL's HKDF fetched its digest by name and made
+  an HMAC context for each of a handshake's ~25 derivations: 910 ns and 13 allocations
+  an HKDF-Expand-Label, 625 ns and 11 with its context reused, 280 ns and 1 as HMAC on a
+  reused context (a microbenchmark, 200,000 calls, the same machine).
+- `c82a6f4`: a record decrypts in place in the bytes received, and the plaintext queue,
+  with its allocation and copy per record, is gone.
+- `1774068`: the 180-byte `ServerState` loads into the caller's variable rather than
+  through a return value: 18.0 to 17.3 ns a load and store (`calls.goose`, three runs
+  each), about 1% of a request.
+- `68a24ae` and `0412aba`: the harness counts allocations (`ALLOCS=1`), and
+  `threads.goose` measures handshakes on several threads.
+
+Measured with spike 02's harness on the machine above (Ryzen 7 5800X3D, Ubuntu 26.04
+in WSL2, kernel `6.18.54.1-microsoft-standard-WSL2`, gcc 15.2, OpenSSL 3.5.5,
+Goose v2026.3), tickets on in both servers, RSA-2048: four binaries, 5 rounds
+interleaved, each run its own process pinned to CPU 2, medians with ranges. Before is
+the server at `68e7364` (`origin/main`) with `68a24ae`'s harness, after is `36b4b9b`,
+and OpenSSL is spike 01's `srv_openssl.c`. The raw output, with the HKDF-reuse step
+(`0412aba`) as a fourth binary, is
+[results-2026-10-22-overhead.txt](../../spikes/02-goose-server/results-2026-10-22-overhead.txt);
+`spikes/01-rustls/summarize.py` makes the tables.
+
+| X25519MLKEM768 | Before | After | Change | OpenSSL |
+|---|---:|---:|---:|---:|
+| json-like request | 2.43 µs (2.40-2.45) | 2.23 µs (2.23-2.26) | -8.3% | 3.35 µs |
+| Full handshake, two tickets | 650.1 µs (649.2-656.7) | 632.3 µs (631.3-636.3) | -2.7% | 723.7 µs |
+| Resumed handshake, one ticket | 149.6 µs (149.0-150.1) | 131.9 µs (131.5-132.9) | -11.8% | 206.5 µs |
+| Encrypt, 16 KB records | 4,604 MiB/s | 4,687 MiB/s | +1.8% | 3,642 MiB/s |
+| Decrypt, 16 KB records | 4,257 MiB/s | 4,392 MiB/s | +3.2% | 3,788 MiB/s |
+| Idle, 4,000 held | 2,931 B | 2,917 B | -14 B | 28,528 B |
+| Handshake in flight, flight drained | 3,807 B | 3,806 B | -1 B | 58,626 B |
+| Handshake in flight, flight queued | 6,175 B | 6,174 B | -1 B | 61,874 B |
+| Most a handshake adds while answering the ClientHello | 12,594 B | 13,402 B | +808 B | 61,399 B |
+
+With X25519 alone: json-like 2.42 to 2.22 µs, full handshake 601.3 to 584.3 µs (-2.8%),
+resumed 102.5 to 84.9 µs (-17.2%); OpenSSL's 3.34, 669.3, and 151.7 µs. The memory
+figures didn't vary between runs.
+
+Allocations OpenSSL's allocator makes inside the server's calls (`ALLOCS=1`, one run
+each, X25519MLKEM768): a json-like request 3 before and 2 after (OpenSSL's server 8); a
+full handshake 427.4 and 159.4 (720.4); a resumption 412 and 123 (688). The HKDF-reuse
+step alone made 377.4 and 351.
+
+- **The loss:** the transient while the server answers a ClientHello grew 808 B (mean
+  10,796 to 11,604 B): the HMAC context, which lives through that call and is freed with
+  the transcript. A connection between calls holds nothing more.
+- **Where a request's time goes now** (perf, 2,000,000 requests, at `c82a6f4`): AES-GCM
+  is about 75%, the copy that drain owes its caller 4%, OpenSSL's per-record IV setup
+  (`EVP_CipherInit_ex2` and the GCM context's parameters) about 5%, allocation and free
+  1%, and Goose's own code about 2%.
+- **Several threads:** `threads.goose`, full handshakes on one shared context, the
+  package's client and the Goose server both on each thread, unpinned, three runs:
+  1,029 handshakes a second on one thread, 2,006 on 2, 3,892 on 4, 7,141 on 8, and
+  9,181 on 16 (two threads a core). Per thread, 97% of one thread's rate at 2 threads,
+  95% at 4, and 87% at 8.
+
+Not done, from what the profile showed:
+
+- **A spare buffer per thread** for the two remaining queues: allocation is 1% of a
+  request now, and a thread-local buffer needs a cleanup at thread exit, which
+  OpenSSL's thread-local storage doesn't run on Windows.
+- **The ticket keys' lock taken for reading:** each ticket issued or opened holds the
+  lock for a copy of 68 bytes, and a read lock writes the same shared word a write lock
+  does, so the cache-line traffic, the cost at many cores, would stay. Handshakes on 8
+  threads, two tickets each, scale as above.
+- **A cipher context kept per ticket key:** a ticket's AES-256-GCM setup costs about
+  0.25 µs, and a context shared between threads would need a copy or the lock per use.
+- **The remaining fetches by name:** key generation, the key exchange, and ML-KEM
+  still fetch their algorithms in each handshake, 1.6% of a resumption; OpenSSL 3.0's
+  API takes no prefetched key manager, key exchange, or KEM there, and a key generation
+  context can't be shared between threads.
+- **`simd fn`:** Goose's own code is about 2% of a request and of a handshake, parsing and state with no loop over bytes to vectorize, and the Linux
+  build's gcc ignores `simd`.
+
+The tests on `36b4b9b`: `scripts/test.sh` on both builds in WSL (Linux), and
+`scripts/test-sanitizers.sh`, all 22 clean with leak detection. The fuzzers ran five
+minutes each, at once, with no findings: `fuzz_hello` 143,646,667 runs, `fuzz_conn`
+12,200,310, and `fuzz_open` 1,246,726; and at `0412aba`, before the HMAC change,
+141,673,074, 11,919,720, and 843,486.
 
 ## macOS
 

@@ -64,6 +64,13 @@ an OpenSSL 3.5.5 client in the same process, bytes moved in memory.
   `main` against them, so the Goose server runs as a program would build it.
 - `prim.c` measures each primitive's allocations after setup, use, and free.
 - `calls.goose` times a call from Goose into the package's C.
+- `ALLOCS=1` makes bench.c's `hs`, `resume`, and `json` count the allocations
+  OpenSSL's allocator makes inside the server's calls, per handshake or request
+  (added for task 007's overhead work, 2026-10-22).
+- `threads.goose` runs full handshakes on several threads on one shared context,
+  the package's client against the Goose server, and prints handshakes per second;
+  `goose build` it, then run `threads THREADS HANDSHAKES`. Exported Goose functions
+  must stay on the main thread, so bench.c can't do this.
 - `build.sh` builds them into `build/spike-goose/`; `run.sh` runs every mode for
   both servers and both key exchanges (`default`: the client's default shares,
   X25519MLKEM768 and X25519; `x25519`: X25519 only, and the servers set to it), five

@@ -46,10 +46,11 @@ X25519MLKEM768 where libcrypto has ML-KEM, X25519, and P-256; `tls::use_groups` 
 others, P-384 among them. A client's context is libssl's `SSL_CTX`, holding the
 certificates it trusts ([Client TLS](#client-tls)).
 
-A `tls::Conn` is one connection's state. A server connection holds three byte queues
-(bytes received, plaintext not yet read, and bytes to send), each direction's record
-keys, and during the handshake its transcript and secrets: about 2.9 KB once idle
-(task 007). A client connection is an `SSL` between two memory BIOs.
+A `tls::Conn` is one connection's state. A server connection holds two byte queues,
+each freed once empty: bytes received, where a record decrypts in place and stays while
+its plaintext is read, and bytes to send. It also holds each direction's record keys,
+and during the handshake its transcript and secrets: about 2.9 KB once idle (task 007).
+A client connection is an `SSL` between two memory BIOs.
 `tls::accept(ctx)` makes a server connection per accepted socket, and
 `tls::connect(ctx, host)` a client one per connected socket.
 
