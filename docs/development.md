@@ -71,7 +71,7 @@ and `goose run` configure `CMakeLists.txt` the first time, and CMake's
 |---|---|---|
 | Debian, Ubuntu | `apt install cmake libssl-dev` | The system's (Ubuntu 24.04: 3.0.13) |
 | macOS | `brew install cmake openssl@3` | `/opt/homebrew/opt/openssl@3` on arm64, `/usr/local/opt/openssl@3` on x86_64 |
-| Windows | Not tried yet | `OPENSSL_ROOT_DIR`, such as the directory of an installer's or vcpkg's OpenSSL |
+| Windows | `vcpkg install openssl:x64-windows` ([Windows](#windows)) | `OPENSSL_ROOT_DIR`: vcpkg's `installed/x64-windows` |
 
 macOS's own `/usr/lib/libssl` is LibreSSL, without headers, and isn't used. Homebrew's
 `openssl` formula is OpenSSL 4.0; `CMakeLists.txt` takes `openssl@3` first, to match the
@@ -155,6 +155,32 @@ docker run --rm -v "$PWD":/src:ro IMAGE sh -c \
 ```
 
 The copy leaves out `build/`, which holds the macOS compiler.
+
+### Windows
+
+Checked 2026-10-22 on Windows 11 Pro 10.0.26300, in Git Bash: `test/run_tests.py` and
+`scripts/test-crypto.sh` pass in both builds. `scripts/test-handshake.sh` doesn't run,
+since the test programs' sockets are POSIX only.
+
+| Tool | Source | Version used |
+|---|---|---|
+| C compiler, CMake | Visual Studio Build Tools 2026 (18), the `VCTools` workload | clang-cl 22.1.3, which `goose build` picked; CMake 4.3.1 |
+| OpenSSL | vcpkg, `openssl:x64-windows`, built from source, no installer or admin rights | 3.6.5 |
+| `openssl` command | Git for Windows | 3.2.1, for `test-crypto.sh` |
+| Python | on `PATH` as `python` | 3.14 |
+
+The Build Tools' CMake isn't on Git Bash's `PATH`, and the test programs load OpenSSL's
+DLLs from vcpkg's `bin`, so put both there, and give each build its own `GOOSE_HOME`:
+
+```sh
+export PATH="$PATH:/c/Program Files (x86)/Microsoft Visual Studio/18/BuildTools/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin:$VCPKG/installed/x64-windows/bin"
+export OPENSSL_ROOT_DIR="$VCPKG/installed/x64-windows"
+python test/run_tests.py
+GOOSE_TLS_SERVER=openssl GOOSE_HOME=$HOME/.goose-openssl python test/run_tests.py
+```
+
+`VCPKG` is vcpkg's checkout. `python3` in Git Bash may be the Microsoft Store's stub;
+`python` is the installed one.
 
 ### On Linux, from Windows
 

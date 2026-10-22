@@ -101,6 +101,8 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 - [x] tlsfuzzer's resumption scripts: [tlsfuzzer.md](tlsfuzzer.md); count-tickets and
       connection-abort pass, session-resumption fails only its TLS 1.2 and `psk_ke`
       probes, which the plan leaves out
+- [ ] A fuzz target that resumes from a ticket the server sealed, which random bytes
+      can't forge, so that the binder check and the resumed flight are fuzzed too
 - [x] Measured with tickets on, full and resumed ([spike 02](../../spikes/02-goose-server/README.md#with-session-tickets)):
       below
 
@@ -110,8 +112,8 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
       (`7ffb6f7`), whose `scripts/test.sh` passes on Linux (2026-10-22)
 - [x] goose-http's handoff, record-control, and platform-stub paths removed: branch
       `no-ktls` in goose-http (`d328c93b`), whose `scripts/test.sh` passes on Linux
-      (2026-10-22). Neither `no-ktls` branch is merged: goose-http's needs goose-tls's
-      first, and a pin moved to it, which waits for the maintainer
+      (2026-10-22), still on goose-tls `v0.0.3`, whose kTLS calls it no longer makes;
+      so it can merge on its own. goose-tls's removal merges with `goose-server`
 - [ ] goose-http's suites and the client check (curl, wrk, h2load, oha; Chromium and
       Firefox once by hand), with versions, suite, group, ALPN, and resumption recorded
 
@@ -294,11 +296,12 @@ full handshake costs 10 µs more with them, OpenSSL's 31 µs, from runs an hour 
 None blocks the work. Two to confirm before the merge:
 
 - **Merge `goose-server` into `main`?** Steps 1 to 5 are done on it, with `no-ktls`
-  merged in; both builds pass `scripts/test.sh`, the sanitizers, and the fuzzers, on
-  Linux only. Options: merge now and test macOS and Windows after; or test them first
-  (macOS with Homebrew's OpenSSL 3 and 4). Recommendation: test first, since the Goose
-  server's C hasn't been compiled on either, and `shim/server.c` has a platform branch
-  (the ticket clock). Meanwhile: nothing merged; the branch is pushed.
+  merged in; both builds pass `scripts/test.sh`, the sanitizers, and the fuzzers on
+  Linux, and the golden tests and `test-crypto.sh` on Windows (clang-cl, OpenSSL
+  3.6.5; [development](../../docs/development.md#windows)). Options: merge now and test
+  macOS after; or test macOS first (Homebrew's OpenSSL 3 and 4). Recommendation: either
+  works, as Linux and Windows pass; macOS's only platform-specific code is the ticket
+  clock's `clock_gettime`. Meanwhile: nothing merged; the branch is pushed.
 - **Test hooks in the shipped library.** `tlsg_ks_set` (RFC 8448's tests set a
   secret) and `tlsg_ticket_clock` (the tests move the ticket clock) are exported by the
   package's C, though only tests call them. Options: keep them, documented as for
@@ -313,9 +316,7 @@ None blocks the work. Two to confirm before the merge:
 
 - goose-http's client check (step 6): its suites over this branch, and curl, wrk,
   h2load, oha, Chromium, and Firefox, with resumption recorded.
-- macOS: both builds' `scripts/test.sh`. Windows: the package's C built, and the
-  golden tests run, for each build.
-- A fuzz target that reaches resumption with a valid ticket, which random bytes can't
-  forge.
+- macOS: both builds' `scripts/test.sh`, with OpenSSL 3 and 4.
+- The resumption fuzz target (step 5).
 - Step 7, once merged: json-tls and 8gbit over the network, a release, and goose-http's
   pin.
