@@ -97,7 +97,8 @@ fn known_pair(server: tls::Conn&, client: tls::Conn&, finished: bool) {
     assert(tls::g_rec_keys(server.id, tls::DIR_READ, tls::S_CLIENT_AP));
     assert(tls::g_rec_keys(server.id, tls::DIR_WRITE, tls::S_SERVER_AP));
     assert(tls::g_rec_keys(client.id, tls::DIR_WRITE, tls::S_CLIENT_AP));
-    var st = tls::load(server.id);
+    var st = tls::ServerState { .. };
+    tls::load(server.id, st);
     st.suite = 0x1301;
     st.group = 0x001d;
     st.sealing = true;

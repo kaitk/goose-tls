@@ -163,7 +163,8 @@ fn main() {
     check::that("the encrypted flight", drained(c) == unhex(SERVER_FLIGHT_RECORD));
     check::that("application keys", tls::application_keys(id, 0x1301));
 
-    var st = tls::load(id);
+    var st = tls::ServerState { .. };
+    tls::load(id, st);
     st.phase = tls::PH_FINISHED;
     st.suite = 0x1301;
     st.group = tls::GROUP_P256;

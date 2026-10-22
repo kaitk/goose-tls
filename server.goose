@@ -210,11 +210,9 @@ struct ServerState {
     last: u8,
 }
 
-fn load(id: i64) -> ServerState {
-    var st = ServerState { .. };
-    g_load(id, st, st.last);
-    return st;
-}
+// Fills st, a ServerState { .. }, from C: through a reference, since a
+// returned state is copied again on its way to the caller.
+fn load(id: i64, st: ServerState&) { g_load(id, st, st.last); }
 
 fn store(id: i64, st: ServerState&) { g_store(id, st, st.last); }
 
@@ -1038,7 +1036,8 @@ fn update_keys(id: i64, st: ServerState&) -> bool {
 fn s_accept(ctx: i64) -> i64 { g_accept(ctx) }
 
 fn s_feed(id: i64, data: const u8[:]) -> i64 {
-    let st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.phase != PH_FAILED else { return FAILED; }
     let n = g_feed(id, data, MAX_FED);
     guard n >= 0 else {
@@ -1051,7 +1050,8 @@ fn s_feed(id: i64, data: const u8[:]) -> i64 {
 
 fn s_handshake(id: i64) -> i64 {
     g_clear_errors();
-    var st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     let r = advance(id, st);
     store(id, st);
     return r;
@@ -1060,7 +1060,8 @@ fn s_handshake(id: i64) -> i64 {
 fn s_read(id: i64, buf: u8[:]) -> i64 {
     g_clear_errors();
     guard buf.len > 0 else { return FAILED; }
-    var st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     var r = 0;
     loop {
         if st.phase == PH_FAILED {
@@ -1084,7 +1085,8 @@ fn s_read(id: i64, buf: u8[:]) -> i64 {
 
 fn s_write(id: i64, data: const u8[:]) -> i64 {
     g_clear_errors();
-    var st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.phase != PH_FAILED else { return FAILED; }
     guard st.phase == PH_OPEN else { return WANT_INPUT; }
     guard !st.closed else {
@@ -1111,7 +1113,8 @@ fn s_write(id: i64, data: const u8[:]) -> i64 {
 
 fn s_shutdown(id: i64) -> i64 {
     g_clear_errors();
-    var st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.phase == PH_OPEN else {
         g_fail(R_UNEXPECTED_MESSAGE, "the handshake isn't done");
         return FAILED;
@@ -1125,16 +1128,20 @@ fn s_shutdown(id: i64) -> i64 {
 }
 
 fn s_alpn(id: i64, out: u8[>..]&) {
-    let st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     if st.alpn > 0 { out.append(alpn_name(g_conn_ctx(id), st.alpn)); }
 }
 
 fn s_version(id: i64, out: u8[>..]&) {
-    if load(id).phase == PH_OPEN { out.append("TLSv1.3"); }
+    var st = ServerState { .. };
+    load(id, st);
+    if st.phase == PH_OPEN { out.append("TLSv1.3"); }
 }
 
 fn s_cipher(id: i64, out: u8[>..]&) {
-    let st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.phase == PH_OPEN else { return; }
     out.append(match st.suite {
         0x1301 => "TLS_AES_128_GCM_SHA256",
@@ -1154,7 +1161,8 @@ fn group_name(g: i64) -> const u8[:] {
 }
 
 fn s_group(id: i64, out: u8[>..]&) {
-    let st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     if st.phase == PH_OPEN { out.append(group_name(st.group)); }
 }
 
@@ -1182,7 +1190,8 @@ fn s_use_groups(ctx: i64, names: const u8[:]) -> bool {
 }
 
 fn s_use_context(id: i64, ctx: i64) -> bool {
-    let st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.paused && (ctx & 1) != 0 else {
         g_fail(R_UNEXPECTED_MESSAGE, "the connection isn't paused at its ClientHello");
         return false;
@@ -1191,7 +1200,8 @@ fn s_use_context(id: i64, ctx: i64) -> bool {
 }
 
 fn s_offered(id: i64, out: u8[>..]&) {
-    var st = load(id);
+    var st = ServerState { .. };
+    load(id, st);
     guard st.paused else { return; }
     var msg: u8[>..] = [];
     copy_hello(id, st, msg);

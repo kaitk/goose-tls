@@ -19,12 +19,14 @@ fn main() {
     for i in N { sum += tls::pending(c); }
     let t1 = clock_ns();
     for i in N {
-        var st = tls::load(c.id);
+        var st = tls::ServerState { .. };
+        tls::load(c.id, st);
         st.updates += 1;
         tls::store(c.id, st);
     }
     let t2 = clock_ns();
-    let st = tls::load(c.id);
+    var st = tls::ServerState { .. };
+    tls::load(c.id, st);
     print("calls=", N, " pending_ns=", (t1 - t0) * 1.0 / N, " load_store_ns=", (t2 - t1) * 1.0 / N,
           " check=", sum + st.updates);
     tls::free(c);

@@ -201,7 +201,8 @@ fn main() {
     check::that("  with the trace's PSK", psk == unhex(PSK));
     tls::g_wipe(id, tls::S_PSK);
 
-    var st = tls::load(id);
+    var st = tls::ServerState { .. };
+    tls::load(id, st);
     st.phase = tls::PH_FINISHED;
     st.suite = 0x1301;
     st.group = tls::GROUP_X25519;
