@@ -18,8 +18,11 @@
 
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
+#include <openssl/core_names.h>
 #include <openssl/err.h>
+#include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rand.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
@@ -46,12 +49,27 @@ typedef struct {
     unsigned char alpn[];
 } hello_info;
 
-static int alpn_index = -1, hello_index = -1;
+/* A server context's session-ticket keys (tls.h), on its SSL_CTX as ex_data
+   too, so that libssl's tickets keep the Goose server's key lifetimes rather
+   than one key for the context's life. */
+typedef struct {
+    CRYPTO_RWLOCK *lock;
+    ticket_key ring[2];
+} tls_tickets;
+
+static int alpn_index = -1, hello_index = -1, tickets_index = -1;
 static CRYPTO_ONCE index_once = CRYPTO_ONCE_STATIC_INIT;
 
 static void alpn_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, long argl, void *argp) {
     (void)parent, (void)ad, (void)idx, (void)argl, (void)argp;
     OPENSSL_free(ptr);
+}
+
+static void tickets_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, long argl, void *argp) {
+    (void)parent, (void)ad, (void)idx, (void)argl, (void)argp;
+    tls_tickets *t = ptr;
+    if (t) CRYPTO_THREAD_lock_free(t->lock);
+    OPENSSL_clear_free(t, sizeof *t);
 }
 
 static void hello_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, long argl, void *argp) {
@@ -64,10 +82,43 @@ static void hello_free(void *parent, void *ptr, CRYPTO_EX_DATA *ad, int idx, lon
 static void index_init(void) {
     alpn_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, alpn_free);
     hello_index = SSL_get_ex_new_index(0, NULL, NULL, NULL, hello_free);
+    tickets_index = SSL_CTX_get_ex_new_index(0, NULL, NULL, NULL, tickets_free);
 }
 
 static int indexes(void) {
-    return CRYPTO_THREAD_run_once(&index_once, index_init) && alpn_index >= 0 && hello_index >= 0;
+    return CRYPTO_THREAD_run_once(&index_once, index_init) && alpn_index >= 0 && hello_index >= 0 &&
+           tickets_index >= 0;
+}
+
+/* libssl's session-ticket keys, from the ring of the connection's context,
+   the one tls_use_context chose if it did: a ticket's key name is its key's
+   id, then zeros, and it's sealed with AES-256-CBC and HMAC-SHA256 under the
+   key's two halves. A ticket whose key expired, or isn't the context's,
+   gets a full handshake (0); one that opens, a new ticket after it (2), as
+   the Goose server sends one after a resumption. */
+static int ticket_keys(SSL *ssl, unsigned char name[16], unsigned char iv[EVP_MAX_IV_LENGTH],
+                       EVP_CIPHER_CTX *cctx, EVP_MAC_CTX *hctx, int enc) {
+    static char digest[] = "SHA256";
+    tls_tickets *t = SSL_CTX_get_ex_data(SSL_get_SSL_CTX(ssl), tickets_index);
+    uint8_t key[64];
+    if (!t || !CRYPTO_THREAD_write_lock(t->lock)) return enc ? -1 : 0;
+    int ok = enc ? ticket_key_issue(t->ring, tlsg_ticket_now(), name, key)
+                 : ticket_key_open(t->ring, tlsg_ticket_now(), name, key);
+    CRYPTO_THREAD_unlock(t->lock);
+    if (!ok) return 0;
+    if (enc) {
+        memset(name + 4, 0, 12);
+        ok = RAND_bytes(iv, 16) == 1;
+    }
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_octet_string(OSSL_MAC_PARAM_KEY, key + 32, 32),
+        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, digest, 0),
+        OSSL_PARAM_construct_end(),
+    };
+    ok = ok && EVP_CipherInit_ex(cctx, EVP_aes_256_cbc(), NULL, key, iv, enc) == 1 &&
+         EVP_MAC_CTX_set_params(hctx, params) == 1;
+    OPENSSL_cleanse(key, sizeof key);
+    return !ok ? -1 : enc ? 1 : 2;
 }
 
 /* Picks the first of the server's protocols that the client offered. When
@@ -148,6 +199,14 @@ int64_t tls_server_new(tls_bytes chain, tls_bytes key, tls_bytes alpn) {
     if (!ctx) return 0;
     if (!tls13_only(ctx) || !use_pem(ctx, chain, key)) goto fail;
     SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
+    tls_tickets *t = OPENSSL_zalloc(sizeof *t);
+    if (!t) goto fail;
+    if (!(t->lock = CRYPTO_THREAD_lock_new()) || !SSL_CTX_set_ex_data(ctx, tickets_index, t)) {
+        CRYPTO_THREAD_lock_free(t->lock);
+        OPENSSL_free(t);
+        goto fail;
+    }
+    SSL_CTX_set_tlsext_ticket_key_evp_cb(ctx, ticket_keys);
     if (alpn.len > 0) {
         tls_alpn *a = OPENSSL_malloc(sizeof(tls_alpn) + (size_t)alpn.len);
         if (!a) goto fail;

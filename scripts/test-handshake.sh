@@ -10,7 +10,7 @@
 # name and ALPN offer, with TLS-ALPN-01's challenge certificate (the server's
 # choose option); the package's client (test/tools/client.goose) against a
 # public HTTPS server and against the test server's self-signed certificate;
-# and a KeyUpdate from s_client each way.
+# a session resumed from a ticket; and a KeyUpdate from s_client each way.
 #
 # The certificate is a self-signed RSA-2048 pair made for the run, as
 # HttpArena mounts one. PORT (default 8081, HttpArena's HTTP/1.1 TLS port)
@@ -191,6 +191,55 @@ start echo
 check_negotiated "* ecdsa_secp256r1_sha256 1" -sigalgs ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256
 cert_file= key_file=
 start echo
+
+echo
+echo "== Resumption from a session ticket"
+# What a connection with these s_client options did: "New" or "Reused", how
+# many NewSessionTickets and ServerHellos came, and whether a Certificate
+# did; or "no echo".
+resumed() {
+    out=$(s_client 'ping\nbye\n' -ign_eof -msg "$@")
+    if ! printf '%s\n' "$out" | grep -q '^ping$'; then
+        echo "no echo"
+        return
+    fi
+    how=$(printf '%s\n' "$out" | grep -m1 -oE '^(New|Reused), TLSv1.3' | cut -d, -f1)
+    tickets=$(printf '%s\n' "$out" | grep -c '<<< .*NewSessionTicket' || :)
+    hellos=$(printf '%s\n' "$out" | grep -c '<<< .*ServerHello' || :)
+    certs=$(printf '%s\n' "$out" | grep -c '<<< .*, Certificate$' || :)
+    echo "$how tickets=$tickets hellos=$hellos certificates=$certs"
+}
+check_resumed() {
+    want=$1
+    shift
+    got=$(resumed "$@")
+    [ "$got" = "$want" ] && pass "$*: $got" || fail "$*: $got, not $want"
+}
+session=$work/session.pem
+check_resumed "New tickets=2 hellos=1 certificates=1" -sess_out "$session"
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -sess_in "$session"
+check_resumed "Reused tickets=1 hellos=2 certificates=0" -sess_in "$session" -groups brainpoolP256r1tls13:X25519
+# A restarted server has new ticket keys.
+start echo
+check_resumed "New tickets=2 hellos=1 certificates=1" -sess_in "$session"
+# The keys' turn, on the server's ticket clock: a key issues for 7200 s and
+# opens for twice that.
+clock() { s_client "clock $1\nbye\n" -ign_eof >/dev/null; }
+check_resumed "New tickets=2 hellos=1 certificates=1" -sess_out "$work/a.pem"
+clock 3600
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -sess_in "$work/a.pem" -sess_out "$work/b.pem"
+clock 3600
+echo "  after 7200 s, a new key issues; the one before still opens"
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -sess_in "$work/b.pem" -sess_out "$work/c.pem"
+clock 3600
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -sess_in "$work/c.pem" -sess_out "$work/d.pem"
+clock 3600
+echo "  after 14400 s, the first key doesn't open; the second does"
+check_resumed "New tickets=2 hellos=1 certificates=1" -sess_in "$work/b.pem"
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -sess_in "$work/d.pem"
+clock 21600
+echo "  after three periods more, neither opens"
+check_resumed "New tickets=2 hellos=1 certificates=1" -sess_in "$work/d.pem"
 
 echo
 echo "== HTTP/1.1 with curl ($("$curl" --version | head -1 | cut -d' ' -f1-2))"

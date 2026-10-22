@@ -3,8 +3,13 @@ the server's Finished: ok
 sealed: ok
 the encrypted flight: ok
 application keys: ok
+the resumption master secret: ok
+a ticket: ok
+  opens: ok
+  with the trace's PSK: ok
 the client's Finished, then handshake: 0
 cipher TLS_AES_128_GCM_SHA256, group x25519
+two session tickets sent: ok
 NewSessionTicket: ok
   sealed as the trace's: ok
 the server's data: 50

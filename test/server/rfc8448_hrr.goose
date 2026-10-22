@@ -154,7 +154,7 @@ fn main() {
     tls::g_tr_update(id, unhex(CLIENT_HELLO_2));
     tls::g_tr_update(id, unhex(SERVER_HELLO));
     assert(ks_set(id, tls::S_SHARED, unhex(SHARED_SECRET)));
-    check::that("handshake keys", tls::handshake_keys(id, 0x1301));
+    check::that("handshake keys", tls::handshake_keys(id, 0x1301, false));
     tls::g_tr_update(id, flight[..fin_at]);
     var ours: u8[>..] = [];
     ours.append(flight[..fin_at]);

@@ -1,0 +1,32 @@
+issued: ok
+ticket bytes: 92
+another connection opens it: ok
+  the issue time is now: ok
+  age_add: ok
+  sni: example.com
+  psk bytes: 32
+issued: ok
+  another nonce, another PSK: ok
+a shared context's connection opens it: ok
+another context's doesn't: ok
+issued: ok
+two tickets with one nonce differ: ok
+  and hold one PSK: ok
+a ticket with any byte changed doesn't open: ok
+cut short, it doesn't: ok
+one byte longer, it doesn't: ok
+nor nothing: ok
+issued: ok
+within the period the key stays: ok
+issued: ok
+after it a new key issues: ok
+  the old key still opens: ok
+  the new key opens: ok
+two periods on, the first key doesn't open: ok
+  the second still does: ok
+issued: ok
+  a third key issues: ok
+  the second opens beside it: ok
+after skipped periods nothing opens: ok
+issued: ok
+  and a new key issues: ok

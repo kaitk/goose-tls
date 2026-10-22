@@ -24,6 +24,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 #include <openssl/bio.h>
 #include <openssl/core_names.h>
@@ -48,8 +53,13 @@
 
 /* Handshake secret slots: room for the largest secret, a hybrid group's
    64-byte shared secret. */
-#define SLOTS 12
+#define SLOTS 13
 #define SLOT_CAP 64
+
+/* A session ticket's envelope: its version, its key's id, and its AES-GCM
+   nonce, which the AEAD also authenticates. */
+#define TICKET_VERSION 1
+#define TICKET_HEAD (1 + 4 + 12)
 
 /* Signature schemes (RFC 8446, section 4.2.3) and groups (section 4.2.7;
    RFC 10024 for X25519MLKEM768), as server.goose names them. */
@@ -118,7 +128,10 @@ static const suite_t *suite_of(int64_t code) {
 
 typedef struct {
     int refs;
+    /* Guards refs and the ticket keys, which every thread holding a
+       reference to the context reads and turns. */
     CRYPTO_RWLOCK *lock;
+    ticket_key keys[2];
     EVP_PKEY *key;
     uint16_t scheme;
     /* The chain, leaf first: each certificate's DER after a 3-byte length,
@@ -138,6 +151,7 @@ typedef struct {
 static void ctx_release(gctx *c) {
     int refs = 0;
     if (!c || !CRYPTO_atomic_add(&c->refs, -1, &refs, c->lock) || refs > 0) return;
+    OPENSSL_cleanse(c->keys, sizeof c->keys);
     EVP_PKEY_free(c->key);
     OPENSSL_free(c->chain);
     OPENSSL_free(c->alpn);
@@ -574,6 +588,33 @@ uint8_t tlsg_tr_restart(int64_t h) {
            EVP_DigestUpdate(c->hs->md, m, 4 + (size_t)n) == 1;
 }
 
+/* The transcript's hash as if extra followed what it holds, into out: its
+   length, or 0. For a PSK binder, over a ClientHello cut before its binders
+   (section 4.2.11.2). */
+int64_t tlsg_tr_hash_with(int64_t h, tls_bytes extra, tls_buf out) {
+    handshake *hs = CONN(h)->hs;
+    if (!hs || !hs->md || extra.len < 0 || out.len < (int64_t)CONN(h)->suite->hash_len) return 0;
+    EVP_MD_CTX *copy = EVP_MD_CTX_new();
+    unsigned int n = 0;
+    int ok = copy && EVP_MD_CTX_copy_ex(copy, hs->md) == 1 &&
+             EVP_DigestUpdate(copy, extra.data, (size_t)extra.len) == 1 &&
+             EVP_DigestFinal_ex(copy, out.data, &n) == 1;
+    EVP_MD_CTX_free(copy);
+    return ok ? (int64_t)n : 0;
+}
+
+static int slot_ok(gconn *c, int64_t s);
+
+/* Adds the Finished message whose verify_data is slot[s] to the transcript:
+   the client's, before it arrives, for the resumption master secret. */
+uint8_t tlsg_tr_add_finished(int64_t h, int64_t s) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, s) || !c->hs->md) return 0;
+    uint8_t m[4] = { 20, 0, 0, c->hs->slot_len[s] };
+    return EVP_DigestUpdate(c->hs->md, m, 4) == 1 &&
+           EVP_DigestUpdate(c->hs->md, c->hs->slot[s], c->hs->slot_len[s]) == 1;
+}
+
 /* Keeps the first ClientHello, which the second must repeat after a
    HelloRetryRequest. */
 uint8_t tlsg_hello_keep(int64_t h, tls_bytes hello) {
@@ -968,6 +1009,169 @@ int64_t tlsg_rec_open(int64_t h, int64_t len) {
 
 /* The sequence number a direction is at. */
 int64_t tlsg_rec_seq(int64_t h, int64_t d) { return (int64_t)dir_of(CONN(h), d)->seq; }
+
+/* ---- Session tickets ---- */
+
+/* Seconds on a clock that a change of the wall clock can't move, which the
+   ticket keys' lifetimes and the tickets' issue times count on: tickets are
+   this process's alone, as their keys are. clock_offset moves it for the
+   tests (tlsg_ticket_clock). */
+static int64_t clock_offset;
+
+int64_t tlsg_ticket_now(void) {
+#ifdef _WIN32
+    return (int64_t)(GetTickCount64() / 1000) + clock_offset;
+#else
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int64_t)t.tv_sec + clock_offset;
+#endif
+}
+
+/* For test/server/tickets.goose: moves the ticket clock forward by
+   seconds. */
+void tlsg_ticket_clock(int64_t seconds) { clock_offset += seconds; }
+
+/* Wipes the keys past opening tickets. */
+static void keys_expire(ticket_key ring[2], int64_t now) {
+    for (int i = 0; i < 2; i++)
+        if (ring[i].live && now >= ring[i].created + 2 * TICKET_PERIOD) OPENSSL_cleanse(&ring[i], sizeof ring[i]);
+}
+
+/* A spent ring[0] moves to ring[1] while it may still open tickets, and a
+   new key takes its place, unless its random bytes fail; then none goes on
+   past its time. */
+int ticket_key_issue(ticket_key ring[2], int64_t now, uint8_t id[4], uint8_t key[64]) {
+    keys_expire(ring, now);
+    ticket_key *cur = &ring[0];
+    if (!cur->live || now >= cur->created + TICKET_PERIOD || cur->uses >= TICKET_MAX_USES) {
+        ticket_key next;
+        memset(&next, 0, sizeof next);
+        int ok = RAND_bytes(next.id, sizeof next.id) == 1 && RAND_bytes(next.key, sizeof next.key) == 1;
+        if (cur->live) {
+            OPENSSL_cleanse(&ring[1], sizeof ring[1]);
+            ring[1] = *cur;
+            OPENSSL_cleanse(cur, sizeof *cur);
+        }
+        if (ok) {
+            if (ring[1].live && memcmp(next.id, ring[1].id, sizeof next.id) == 0) next.id[0] ^= 1;
+            next.live = 1;
+            next.created = now;
+            *cur = next;
+        }
+        OPENSSL_cleanse(&next, sizeof next);
+        if (!ok) return 0;
+    }
+    memcpy(id, cur->id, sizeof cur->id);
+    memcpy(key, cur->key, sizeof cur->key);
+    cur->uses++;
+    return 1;
+}
+
+int ticket_key_open(ticket_key ring[2], int64_t now, const uint8_t id[4], uint8_t key[64]) {
+    keys_expire(ring, now);
+    for (int i = 0; i < 2; i++) {
+        if (ring[i].live && memcmp(ring[i].id, id, sizeof ring[i].id) == 0) {
+            memcpy(key, ring[i].key, sizeof ring[i].key);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* AES-256-GCM over a ticket's plaintext: seal into out, which holds
+   in_len + 16, or open in_len bytes and their tag into out. */
+static int ticket_aead(const uint8_t key[32], const uint8_t *head, const uint8_t *in, size_t in_len,
+                       uint8_t *out, int enc) {
+    EVP_CIPHER_CTX *x = EVP_CIPHER_CTX_new();
+    int a = 0, f = 0;
+    int ok = x && EVP_CipherInit_ex2(x, alg.suites[1].cipher, key, head + 5, enc, NULL) == 1 &&
+             EVP_CipherUpdate(x, NULL, &a, head, TICKET_HEAD) == 1;
+    if (ok && enc)
+        ok = EVP_CipherUpdate(x, out, &a, in, (int)in_len) == 1 && EVP_CipherFinal_ex(x, out + a, &f) == 1 &&
+             EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_GET_TAG, 16, out + in_len) == 1;
+    else if (ok)
+        ok = EVP_CipherUpdate(x, out, &a, in, (int)in_len) == 1 &&
+             EVP_CIPHER_CTX_ctrl(x, EVP_CTRL_AEAD_SET_TAG, 16, (void *)(in + in_len)) == 1 &&
+             EVP_CipherFinal_ex(x, out + a, &f) == 1;
+    EVP_CIPHER_CTX_free(x);
+    return ok;
+}
+
+/* A session ticket for the connection, appended to out: version, the
+   issuing key's id, a fresh nonce, and sealed under that key with them as
+   additional data, the suite, the PSK that
+   HKDF-Expand-Label(slot[res], "resumption", nonce, Hash.length) gives
+   (section 4.6.1), the issue time, age_add, and the SNI name. 0 when no key
+   can issue one. */
+uint8_t tlsg_ticket_issue(int64_t h, int64_t res, tls_bytes nonce, int64_t age_add, gs_rref out) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, res) || c->hs->slot_len[res] != c->suite->hash_len || nonce.len < 0 || nonce.len > 255)
+        return 0;
+    const suite_t *s = c->suite;
+    size_t hl = s->hash_len, n = 0;
+    int64_t now = tlsg_ticket_now();
+    uint8_t pt[2 + 1 + 48 + 8 + 4 + 1 + 255], sealed[sizeof pt + 16], head[TICKET_HEAD], key[64];
+    pt[n++] = (uint8_t)(s->code >> 8), pt[n++] = (uint8_t)s->code, pt[n++] = (uint8_t)hl;
+    int ok = expand_label(s, c->hs->slot[res], hl, "resumption", 10, nonce.data, (size_t)nonce.len, pt + n, hl);
+    n += hl;
+    for (int i = 7; i >= 0; i--) pt[n++] = (uint8_t)(now >> (8 * i));
+    for (int i = 3; i >= 0; i--) pt[n++] = (uint8_t)(age_add >> (8 * i));
+    pt[n++] = c->sni_len;
+    if (c->sni_len) memcpy(pt + n, c->sni, c->sni_len);
+    n += c->sni_len;
+    head[0] = TICKET_VERSION;
+    ok = ok && RAND_bytes(head + 5, 12) == 1 && CRYPTO_THREAD_write_lock(c->ctx->lock);
+    if (ok) {
+        ok = ticket_key_issue(c->ctx->keys, now, head + 1, key);
+        CRYPTO_THREAD_unlock(c->ctx->lock);
+    }
+    ok = ok && ticket_aead(key, head, pt, n, sealed, 1);
+    if (ok) {
+        gs_bld_append(out, head, TICKET_HEAD);
+        gs_bld_append(out, sealed, (int64_t)(n + 16));
+    }
+    OPENSSL_cleanse(pt, sizeof pt);
+    OPENSSL_cleanse(key, sizeof key);
+    return (uint8_t)ok;
+}
+
+#pragma pack(push, 1)
+/* What a ticket that opens holds besides its PSK; suite 0 when it doesn't
+   open. Goose's tls::TicketFacts. */
+typedef struct { int64_t suite, issued, age_add; } ticket_facts;
+#pragma pack(pop)
+
+/* Opens a ticket under the context's keys: its facts, its PSK into
+   slot[psk], and its SNI name appended to sni. A ticket under a key that
+   expired, or that isn't one of the context's, doesn't open. */
+ticket_facts tlsg_ticket_open(int64_t h, tls_bytes ticket, int64_t psk, gs_rref sni) {
+    gconn *c = CONN(h);
+    ticket_facts facts = { 0, 0, 0 };
+    uint8_t pt[2 + 1 + 48 + 8 + 4 + 1 + 255], key[64];
+    if (!slot_ok(c, psk) || ticket.len < TICKET_HEAD + 16 + 2 + 1 + 32 + 8 + 4 + 1 ||
+        ticket.len > TICKET_HEAD + 16 + (int64_t)sizeof pt || ticket.data[0] != TICKET_VERSION)
+        return facts;
+    if (!CRYPTO_THREAD_write_lock(c->ctx->lock)) return facts;
+    int found = ticket_key_open(c->ctx->keys, tlsg_ticket_now(), ticket.data + 1, key);
+    CRYPTO_THREAD_unlock(c->ctx->lock);
+    size_t n = (size_t)ticket.len - TICKET_HEAD - 16;
+    if (found && ticket_aead(key, ticket.data, ticket.data + TICKET_HEAD, n, pt, 0)) {
+        size_t hl = pt[2];
+        const suite_t *s = suite_of((int64_t)pt[0] << 8 | pt[1]);
+        if (s && hl == s->hash_len && n >= 3 + hl + 8 + 4 + 1 && n == 3 + hl + 8 + 4 + 1 + pt[3 + hl + 12]) {
+            memcpy(c->hs->slot[psk], pt + 3, hl);
+            c->hs->slot_len[psk] = (uint8_t)hl;
+            facts.suite = s->code;
+            for (int i = 0; i < 8; i++) facts.issued = facts.issued << 8 | pt[3 + hl + i];
+            for (int i = 0; i < 4; i++) facts.age_add = facts.age_add << 8 | pt[3 + hl + 8 + i];
+            gs_bld_append(sni, pt + 3 + hl + 13, pt[3 + hl + 12]);
+        }
+    }
+    OPENSSL_cleanse(pt, sizeof pt);
+    OPENSSL_cleanse(key, sizeof key);
+    return facts;
+}
 
 /* ---- Failures ---- */
 

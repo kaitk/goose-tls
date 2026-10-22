@@ -52,6 +52,11 @@ extern "tlsg_hs_end" fn g_hs_end(id: i64);
 extern "tlsg_tr_update" fn g_tr_update(id: i64, data: const u8[:]) -> bool;
 extern "tlsg_tr_hash" fn g_tr_hash(id: i64, out: u8[:]) -> i64;
 extern "tlsg_tr_restart" fn g_tr_restart(id: i64) -> bool;
+extern "tlsg_tr_hash_with" fn g_tr_hash_with(id: i64, extra: const u8[:], out: u8[:]) -> i64;
+extern "tlsg_tr_add_finished" fn g_tr_add_finished(id: i64, slot: i64) -> bool;
+extern "tlsg_ticket_issue" fn g_ticket_issue(id: i64, res: i64, nonce: const u8[:], age_add: i64, out: u8[>..]&) -> bool;
+extern "tlsg_ticket_open" fn g_ticket_open(id: i64, ticket: const u8[:], psk: i64, sni: u8[>..]&) -> TicketFacts;
+extern "tlsg_ticket_now" fn g_ticket_now() -> i64;
 extern "tlsg_hello_keep" fn g_hello_keep(id: i64, hello: const u8[:]) -> bool;
 extern "tlsg_hello_kept" fn g_hello_kept(id: i64, out: u8[>..]&);
 extern "tlsg_ks_extract" fn g_extract(id: i64, dst: i64, salt: i64, ikm: i64) -> bool;
@@ -131,6 +136,20 @@ let S_SERVER_AP = 7;
 let S_SERVER_FINISHED = 8;
 let S_CLIENT_FINISHED = 9;
 let S_SHARED = 10;
+let S_PSK = 11;
+let S_RESUMPTION = 12;
+
+// Session tickets (section 4.6.1): two after a full handshake and one after
+// a resumption, as OpenSSL sends them, each for 7,200 seconds, OpenSSL's
+// default lifetime; a ticket's key lives as shim/server.c's TICKET_PERIOD
+// says.
+let TICKET_LIFETIME = 7200;
+let PSK_DHE_KE = 1;
+let HS_NEW_SESSION_TICKET = 4;
+
+// What an opened ticket holds besides its PSK, as shim/server.c's
+// tlsg_ticket_open returns it; suite 0 when it didn't open.
+struct TicketFacts { suite: i64, issued: i64, age_add: i64 }
 
 // AES-GCM's confidentiality limit, as rustls's TLS suites take it: the
 // server updates its keys before sealing this many records under one
@@ -167,6 +186,8 @@ struct ServerState {
     chosen: bool,
     ccs_sent: bool,
     ccs_seen: bool,
+    // The handshake resumed a session from a ticket.
+    resumed: bool,
     // The server's records are encrypted from here on.
     sealing: bool,
     skip: i64,
@@ -532,22 +553,71 @@ fn serve(id: i64, st: ServerState&, msg: const u8[:]) -> i64 {
         guard has && h.shares.len == 4 + share.len else {
             return fail(id, st, ALERT_ILLEGAL_PARAMETER, R_BAD_KEY_SHARE, "the second ClientHello's key_share");
         }
-        g_tr_update(id, msg);
     } else {
-        guard g_hs_begin(id, c.suite) && g_tr_update(id, msg) else {
-            return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the transcript");
-        }
+        guard g_hs_begin(id, c.suite) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the transcript"); }
         if h.early_data {
             st.skip = if c.retry { SKIP_ENCRYPTED } else { SKIP_UNDECRYPTABLE };
             st.skip_left = SKIP_MAX;
         }
     }
+    // A ticket is taken once the context is chosen and the suite known, and
+    // before the ClientHello enters the transcript, whose binder covers it
+    // only up to its binders. A HelloRetryRequest leaves it to the second.
+    let psk = if c.retry { -1 } else { resume(id, st, h, c.suite) };
+    guard psk != FAILED else { return FAILED; }
+    guard g_tr_update(id, msg) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the transcript"); }
     consume_hello(id, st);
     st.suite = c.suite;
     st.group = c.group;
     st.alpn = c.alpn;
+    st.resumed = psk >= 0;
     if c.retry { return retry(id, st, h); }
-    return answer(id, st, h);
+    return answer(id, st, h, psk);
+}
+
+// The pre_shared_key identity the server resumes from (section 4.2.11): the
+// first ticket that opens under this context and fits the suite's hash, its
+// lifetime from its authenticated issue time, and the SNI name. -1 for none,
+// and so a full handshake; or FAILED once the chosen ticket's binder doesn't
+// verify. Leaves the early secret from its PSK in S_EARLY.
+fn resume(id: i64, st: ServerState&, h: Hello&, suite: i64) -> i64 {
+    guard h.has_psk else { return -1; }
+    guard h.has_psk_modes else {
+        return fail(id, st, ALERT_MISSING_EXTENSION, R_MISSING_PSK_KEX_MODES, "");
+    }
+    guard find(h.psk_modes, "\x01") >= 0 else { return -1; }
+    var r = reader(h.psk);
+    let ids = vec16(h.psk, r);
+    let binders = vec16(h.psk, r);
+    var each = reader(ids);
+    let now = g_ticket_now();
+    var chosen = -1;
+    var k = 0;
+    while left(each) > 0 && chosen < 0 {
+        let ticket = vec16(ids, each);
+        get32(ids, each);
+        var sni: u8[>..] = [];
+        let f = g_ticket_open(id, ticket, S_PSK, sni);
+        if f.suite != 0 && hash_len(f.suite) == hash_len(suite) && f.issued <= now &&
+           now - f.issued < TICKET_LIFETIME && sni == h.sni {
+            chosen = k;
+        } else {
+            g_wipe(id, S_PSK);
+        }
+        k += 1;
+    }
+    guard chosen >= 0 else { return -1; }
+    var b = reader(binders);
+    var binder: const u8[:] = binders[..0];
+    for j in chosen + 1 { binder = vec8(binders, b); }
+    var hb: u8[48] = [0; 48];
+    let n = g_tr_hash_with(id, h.raw[..h.binders_at], hb);
+    let ok = n > 0 && g_extract(id, S_EARLY, -1, S_PSK) &&
+             derive(id, S_DERIVED, S_EARLY, "res binder", empty_hash(suite)) &&
+             g_finished(id, S_SERVER_FINISHED, S_DERIVED, hb[..n]) && g_check(id, S_SERVER_FINISHED, binder);
+    for s in [S_PSK, S_DERIVED, S_SERVER_FINISHED] { g_wipe(id, s); }
+    guard ok else { return fail(id, st, ALERT_DECRYPT_ERROR, R_BINDER_DOES_NOT_VERIFY, ""); }
+    return chosen;
 }
 
 // Sends a HelloRetryRequest for st.group (section 4.1.4).
@@ -556,7 +626,7 @@ fn retry(id: i64, st: ServerState&, h: Hello&) -> i64 {
         return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the transcript");
     }
     var m: u8[>..] = [];
-    server_hello(m, HRR_RANDOM, h.session_id, st.suite, st.group, "");
+    server_hello(m, HRR_RANDOM, h.session_id, st.suite, st.group, "", -1);
     g_tr_update(id, m);
     send_plain(id, CT_HANDSHAKE, m);
     if h.session_id.len > 0 && !st.ccs_sent {
@@ -568,9 +638,10 @@ fn retry(id: i64, st: ServerState&, h: Hello&) -> i64 {
 }
 
 // A ServerHello, or a HelloRetryRequest when share is empty: then key_share
-// names only the group.
+// names only the group. psk is the pre_shared_key identity the server
+// resumes from, or -1.
 fn server_hello(m: u8[>..]&, random: const u8[:], session_id: const u8[:], suite: i64, group: i64,
-                share: const u8[:]) {
+                share: const u8[:], psk: i64) {
     put8(m, HS_SERVER_HELLO);
     let body = begin_vec(m, 3);
     put16(m, 0x0303);
@@ -592,6 +663,11 @@ fn server_hello(m: u8[>..]&, random: const u8[:], session_id: const u8[:], suite
         end_vec(m, k, 2);
     }
     end_vec(m, ks, 2);
+    if psk >= 0 {
+        put16(m, EXT_PRE_SHARED_KEY);
+        put16(m, 2);
+        put16(m, psk);
+    }
     end_vec(m, exts, 2);
     end_vec(m, body, 3);
 }
@@ -632,9 +708,11 @@ fn transcript(id: i64, buf: u8[:]) -> const u8[:] {
 
 // Answers the ClientHello with the server's flight (section 4): ServerHello,
 // then under the handshake keys EncryptedExtensions, Certificate,
-// CertificateVerify, and Finished. Then derives what the client's Finished
-// needs and the application keys, so that the transcript can go.
-fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
+// CertificateVerify, and Finished, or for a resumption from psk, the
+// pre_shared_key identity, no Certificate or CertificateVerify. Then derives
+// what the client's Finished needs and the application keys, so that the
+// transcript can go.
+fn answer(id: i64, st: ServerState&, h: Hello&, psk: i64) -> i64 {
     let ctx = g_conn_ctx(id);
     let client_share, has = share_for(h.shares, st.group);
     var share: u8[>..] = [];
@@ -644,14 +722,16 @@ fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
     var random: u8[32] = [0; 32];
     guard g_random(random) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "random bytes"); }
     var m: u8[>..] = [];
-    server_hello(m, random, h.session_id, st.suite, st.group, share);
+    server_hello(m, random, h.session_id, st.suite, st.group, share, psk);
     g_tr_update(id, m);
     send_plain(id, CT_HANDSHAKE, m);
     if h.session_id.len > 0 && !st.ccs_sent {
         g_out_put(id, CCS_RECORD);
         st.ccs_sent = true;
     }
-    guard handshake_keys(id, st.suite) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the handshake keys"); }
+    guard handshake_keys(id, st.suite, psk >= 0) else {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the handshake keys");
+    }
     st.sealing = true;
     var hb: u8[48] = [0; 48];
 
@@ -672,7 +752,28 @@ fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
     }
     end_vec(flight, ee_exts, 2);
     end_vec(flight, ee_body, 3);
+    if psk >= 0 {
+        g_tr_update(id, flight[ee..]);
+    } else {
+        guard certificate(id, st, flight, ee) else {
+            return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the signature");
+        }
+    }
+    guard server_finished(id, st.suite, flight) && send_sealed(id, CT_HANDSHAKE, flight) else {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the server's Finished");
+    }
+    guard application_keys(id, st.suite) else {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the application keys");
+    }
+    st.phase = PH_FINISHED;
+    return AGAIN;
+}
 
+// Appends Certificate and CertificateVerify to flight, after the
+// EncryptedExtensions at ee, and the flight from ee to the transcript.
+fn certificate(id: i64, st: ServerState&, flight: u8[>..]&, ee: i64) -> bool {
+    let ctx = g_conn_ctx(id);
+    var hb: u8[48] = [0; 48];
     put8(flight, HS_CERTIFICATE);
     let cert_body = begin_vec(flight, 3);
     put8(flight, 0);
@@ -703,29 +804,23 @@ fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
     let cv_body = begin_vec(flight, 3);
     put16(flight, g_ctx_scheme(ctx));
     let sig = begin_vec(flight, 2);
-    guard g_sign(id, content, flight) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the signature"); }
+    guard g_sign(id, content, flight) else { return false; }
     end_vec(flight, sig, 2);
     end_vec(flight, cv_body, 3);
-    g_tr_update(id, flight[cv..]);
-
-    guard server_finished(id, st.suite, flight) && send_sealed(id, CT_HANDSHAKE, flight) else {
-        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the server's Finished");
-    }
-    guard application_keys(id, st.suite) else {
-        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the application keys");
-    }
-    st.phase = PH_FINISHED;
-    return AGAIN;
+    return g_tr_update(id, flight[cv..]);
 }
 
 // The key schedule (RFC 8446, section 7.1), in three steps of the server's
 // flight. Each derives into C's slots and reads the transcript there.
 
 // Once the ServerHello is in the transcript and the shared secret in
-// S_SHARED: the handshake secrets, and the handshake keys each way.
-fn handshake_keys(id: i64, suite: i64) -> bool {
+// S_SHARED: the handshake secrets, and the handshake keys each way. The
+// early secret is from no PSK, unless resumed, when S_EARLY has it from the
+// ticket's (resume).
+fn handshake_keys(id: i64, suite: i64, resumed: bool) -> bool {
     var hb: u8[48] = [0; 48];
-    let ok = g_extract(id, S_EARLY, -1, -1) && derive(id, S_DERIVED, S_EARLY, "derived", empty_hash(suite)) &&
+    let ok = (resumed || g_extract(id, S_EARLY, -1, -1)) &&
+             derive(id, S_DERIVED, S_EARLY, "derived", empty_hash(suite)) &&
              g_extract(id, S_HANDSHAKE, S_DERIVED, S_SHARED);
     g_wipe(id, S_SHARED);
     g_wipe(id, S_EARLY);
@@ -750,14 +845,21 @@ fn server_finished(id: i64, suite: i64, flight: u8[>..]&) -> bool {
 // Once the server's Finished is in the transcript: the client's Finished
 // will cover exactly this transcript, so what it must hold, and the
 // application secrets, are known now, and the server sends under its
-// application key. Wipes the handshake's secrets and frees the transcript.
+// application key. The resumption master secret covers the client's
+// Finished too, which is known now as well; it waits in S_RESUMPTION for the
+// tickets. Wipes the rest of the handshake's secrets and frees the
+// transcript.
 fn application_keys(id: i64, suite: i64) -> bool {
     var hb: u8[48] = [0; 48];
     let h = transcript(id, hb);
-    let ok = h.len > 0 && derive(id, S_DERIVED, S_HANDSHAKE, "derived", empty_hash(suite)) &&
+    var ok = h.len > 0 && derive(id, S_DERIVED, S_HANDSHAKE, "derived", empty_hash(suite)) &&
              g_extract(id, S_MASTER, S_DERIVED, -1) && derive(id, S_CLIENT_AP, S_MASTER, "c ap traffic", h) &&
              derive(id, S_SERVER_AP, S_MASTER, "s ap traffic", h) &&
              g_finished(id, S_CLIENT_FINISHED, S_CLIENT_HS, h) && g_rec_keys(id, DIR_WRITE, S_SERVER_AP);
+    var hr: u8[48] = [0; 48];
+    ok = ok && g_tr_add_finished(id, S_CLIENT_FINISHED);
+    let with_finished = transcript(id, hr);
+    ok = ok && with_finished.len > 0 && derive(id, S_RESUMPTION, S_MASTER, "res master", with_finished);
     for s in [S_DERIVED, S_HANDSHAKE, S_MASTER, S_SERVER_HS, S_CLIENT_HS, S_SERVER_AP, S_SERVER_FINISHED] {
         g_wipe(id, s);
     }
@@ -876,6 +978,7 @@ fn handshake_messages(id: i64, st: ServerState&) -> i64 {
         guard g_rec_keys(id, DIR_READ, S_CLIENT_AP) else {
             return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the client's keys");
         }
+        issue_tickets(id, st);
         g_hs_end(id);
         st.phase = PH_OPEN;
         return AGAIN;
@@ -892,6 +995,36 @@ fn handshake_messages(id: i64, st: ServerState&) -> i64 {
         st.update_owed = true;
     }
     return AGAIN;
+}
+
+// Sends the session tickets once the client's Finished is in (section
+// 4.6.1): two after a full handshake, one after a resumption, each with a
+// nonce of its own. A ticket the context's keys can't seal, such as when
+// random bytes fail, isn't sent; the connection goes on without it.
+fn issue_tickets(id: i64, st: ServerState&) {
+    let count = if st.resumed { 1 } else { 2 };
+    for i in count {
+        var nonce: u8[1] = [i as! u8];
+        var add: u8[4] = [0; 4];
+        var ticket: u8[>..] = [];
+        guard g_random(add) else { break; }
+        let age_add = (add[0] as i64) << 24 | (add[1] as i64) << 16 | (add[2] as i64) << 8 | add[3];
+        guard g_ticket_issue(id, S_RESUMPTION, nonce, age_add, ticket) else { break; }
+        var m: u8[>..] = [];
+        put8(m, HS_NEW_SESSION_TICKET);
+        let body = begin_vec(m, 3);
+        put32(m, TICKET_LIFETIME);
+        put32(m, age_add);
+        put8(m, nonce.len);
+        m.append(nonce);
+        let t = begin_vec(m, 2);
+        m.append(ticket);
+        end_vec(m, t, 2);
+        put16(m, 0);
+        end_vec(m, body, 3);
+        guard g_seal(id, CT_HANDSHAKE, m) >= 0 else { break; }
+    }
+    g_wipe(id, S_RESUMPTION);
 }
 
 // Sends a KeyUpdate that asks for none in return, and moves the server's

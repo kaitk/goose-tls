@@ -4,7 +4,8 @@
 //   echo_server PORT CERT KEY echo|http [choose]
 //
 // echo sends back every byte it reads, and closes with close_notify after a
-// line "bye". http answers each HTTP/1.1 request: a POST with its body, any
+// line "bye"; a line "clock N" before it moves the session tickets' clock N
+// seconds on, for the tests of their keys' lifetimes. http answers each HTTP/1.1 request: a POST with its body, any
 // other method with a small JSON object; it closes after a request that asks
 // to. For each connection it prints the version, the cipher, and the ALPN
 // protocol, or why the handshake failed. ALPN offers h2-less "http/1.1".
@@ -32,6 +33,7 @@ extern fn net_accept(fd: i64) -> i64;
 extern fn net_recv(fd: i64, buf: u8[:]) -> i64;
 extern fn net_send(fd: i64, data: const u8[:]) -> i64;
 extern fn net_close(fd: i64);
+extern "tlsg_ticket_clock" fn ticket_clock(seconds: i64);
 
 // Sends everything the connection has waiting.
 fn flush(c: tls::Conn, fd: i64, out: u8[:]) {
@@ -94,7 +96,14 @@ fn respond(http: bool, plain: const u8[:], req: u8[>..]&, reply: u8[>..]&) -> bo
     req.append(plain);
     guard !http else { return answer(req, reply); }
     reply.append(plain);
-    return ends_with(req, "bye\n");
+    guard ends_with(req, "bye\n") else { return false; }
+    each_split(req, '\n') {
+        if starts_with(it, "clock ") {
+            let seconds, ok = parse_int(it[6..]);
+            if ok { ticket_clock(seconds); }
+        }
+    };
+    return true;
 }
 
 // Moves a connection paused at its ClientHello to the context its SNI name

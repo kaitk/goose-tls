@@ -1,8 +1,9 @@
 // The Goose server's key schedule and record layer against RFC 8448's
 // "Simple 1-RTT Handshake" (section 3), TLS_AES_128_GCM_SHA256 over X25519:
 // from the trace's ClientHello, ServerHello, and shared secret, the server's
-// Finished, its encrypted flight, the client's Finished, a NewSessionTicket
-// and data each way, and close_notify, byte for byte. The trace's
+// Finished, its encrypted flight, the client's Finished, the resumption
+// master secret and a ticket's PSK, a NewSessionTicket and data each way,
+// and close_notify, byte for byte. The trace's
 // CertificateVerify is an RSA-PSS signature, random, so the test feeds the
 // trace's messages into the transcript rather than the server's own.
 import std;
@@ -114,7 +115,17 @@ let SERVER_DATA_RECORD = """
     36 e3 0e fa f9 7d 90 e6 df fc 60 2d cb 50 1a 59 a8 fc c4 9c 4b f2 e5 f0 a2 1c 00 47 c2 ab f3
     32 54 0d d0 32 e1 67 c2 95 5d
     """;
-let CLIENT_ALERT_RECORD = "17 03 03 00 13 c9 87 27 60 65 56 66 b7 4d 7f f1 15 3e fd 6d b6 d0 b0 e3";
+let RESUMPTION_MASTER = """
+    7d f2 35 f2 03 1d 2a 05 12 87 d0 2b 02 41 b0 bf da f8 6c c8 56 23 1f 2d 5a ba 46 c4 34 ec 19 6c
+    """;
+// The PSK of the trace's ticket, whose nonce is 00 00.
+let PSK = """
+    4e cd 0e b6 ec 3b 4d 87 f5 d6 02 8f 92 2c a4 c5 85 1a 27 7f d4 13 11 c9 e6 2d 2c 94 92 e1 c4 f3
+    """;
+let SERVER_AP_SECRET = """
+    a1 1a f9 f0 55 31 f8 56 ad 47 11 6b 45 a9 50 32 82 04 b4 f4 4b fb 6b 3a 4b 4f 1f 3f cb 63 16 43
+    """;
+let CLIENT_ALERT_RECORD ="17 03 03 00 13 c9 87 27 60 65 56 66 b7 4d 7f f1 15 3e fd 6d b6 d0 b0 e3";
 let SERVER_ALERT_RECORD = "17 03 03 00 13 b5 8f d6 71 66 eb f5 99 d2 47 20 cf be 7e fa 7a 88 64 a9";
 
 fn nibble(c: u8) -> u8 {
@@ -130,6 +141,17 @@ fn unhex(s: const u8[:]) -> u8[>..] {
     }
     for i in digits.len / 2 { out.push(nibble(digits[2 * i]) << 4 | nibble(digits[2 * i + 1])); }
     return out;
+}
+
+// How many records the bytes hold, whole.
+fn records(b: const u8[:]) -> i64 {
+    var n = 0;
+    var at = 0;
+    while at + 5 <= b.len {
+        at += 5 + ((b[at + 3] as i64) << 8 | b[at + 4]);
+        n += 1;
+    }
+    return if at == b.len { n } else { -1 };
 }
 
 // Everything waiting for drain.
@@ -158,7 +180,7 @@ fn main() {
     tls::g_tr_update(id, unhex(CLIENT_HELLO));
     tls::g_tr_update(id, unhex(SERVER_HELLO));
     assert(ks_set(id, tls::S_SHARED, unhex(SHARED_SECRET)));
-    check::that("handshake keys", tls::handshake_keys(id, 0x1301));
+    check::that("handshake keys", tls::handshake_keys(id, 0x1301, false));
     tls::g_tr_update(id, flight[..fin_at]);
     var ours: u8[>..] = [];
     ours.append(flight[..fin_at]);
@@ -166,6 +188,18 @@ fn main() {
     check::that("sealed", tls::send_sealed(id, tls::CT_HANDSHAKE, ours));
     check::that("the encrypted flight", drained(c) == unhex(SERVER_FLIGHT_RECORD));
     check::that("application keys", tls::application_keys(id, 0x1301));
+    var secret: u8[>..] = [];
+    tls::g_public(id, tls::S_RESUMPTION, secret);
+    check::that("the resumption master secret", secret == unhex(RESUMPTION_MASTER));
+    // A ticket with the trace's nonce holds the trace's PSK.
+    var ticket: u8[>..] = [];
+    var sni: u8[>..] = [];
+    check::that("a ticket", tls::g_ticket_issue(id, tls::S_RESUMPTION, "\x00\x00", 0, ticket));
+    check::that("  opens", tls::g_ticket_open(id, ticket, tls::S_PSK, sni).suite == 0x1301);
+    var psk: u8[>..] = [];
+    tls::g_public(id, tls::S_PSK, psk);
+    check::that("  with the trace's PSK", psk == unhex(PSK));
+    tls::g_wipe(id, tls::S_PSK);
 
     var st = tls::load(id);
     st.phase = tls::PH_FINISHED;
@@ -176,7 +210,15 @@ fn main() {
     tls::feed(c, unhex(CLIENT_FINISHED_RECORD));
     check::eq("the client's Finished, then handshake", tls::handshake(c), 0);
     print("cipher ", tls::cipher(c), ", group ", tls::group(c));
+    let tickets = drained(c);
+    check::that("two session tickets sent", records(tickets) == 2);
 
+    // The trace's records follow from the trace's server traffic secret,
+    // with its NewSessionTicket first.
+    assert(tls::g_hs_begin(id, 0x1301));
+    assert(ks_set(id, tls::S_SERVER_AP, unhex(SERVER_AP_SECRET)));
+    assert(tls::g_rec_keys(id, tls::DIR_WRITE, tls::S_SERVER_AP));
+    tls::g_hs_end(id);
     check::that("NewSessionTicket", tls::g_seal(id, tls::CT_HANDSHAKE, unhex(TICKET)) == 1);
     check::that("  sealed as the trace's", drained(c) == unhex(TICKET_RECORD));
     var payload: u8[>..] = [];

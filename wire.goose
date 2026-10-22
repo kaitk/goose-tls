@@ -76,6 +76,11 @@ fn put16(w: u8[>..]&, v: i64) {
     w.push(v as! u8);
 }
 
+fn put32(w: u8[>..]&, v: i64) {
+    put16(w, v >> 16);
+    put16(w, v);
+}
+
 fn put24(w: u8[>..]&, v: i64) {
     w.push((v >> 16) as! u8);
     w.push((v >> 8) as! u8);
