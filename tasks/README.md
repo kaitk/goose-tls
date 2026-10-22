@@ -46,9 +46,8 @@ for the latest measurements.
 ## Order
 
 Task 001, server TLS, is done: goose-http's HTTP/1.1 over TLS (its task 014) and
-HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, is built
-and passes on kernels with kTLS, but kTLS is to be removed (2026-10-22, task 007), so
-its open items won't be done. Task 003, done, added the hooks an outside ACME
+HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, was
+cancelled and its code removed (2026-10-22, task 007). Task 003, done, added the hooks an outside ACME
 package needs (goose-rest's task 049): a certificate per connection, a certificate
 swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
 connection's memory BIO buffers once they're empty (goose-http's task 058); a release

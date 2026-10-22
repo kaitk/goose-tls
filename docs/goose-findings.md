@@ -97,10 +97,11 @@ printf 'import std;\nimport lib from "../lib";\nextern fn two() -> i32;\nfn main
 cd a && goose build -o a a.goose      # Undefined symbols: "_two"
 ```
 
-The tests reach the shim's test-only functions this way (`test/kernel/`). Linking every
-imported package's native part, or saying in `docs/packages.md` that only a called
-package is linked, would do. Workaround: `test/kernel/derive.goose`, which calls only
-test-only functions, also calls `tls::library()`.
+A test reaches the shim's test-only functions this way. Linking every imported
+package's native part, or saying in `docs/packages.md` that only a called package is
+linked, would do. Workaround: a test that calls only test-only functions also calls
+the package, such as `tls::library()`, as the kTLS tests did until they went with kTLS
+(2026-10-22).
 
 ### A sidecar can't name a library directory
 

@@ -10,8 +10,7 @@
    A handle is the address of an SSL_CTX or an SSL, as an int64_t; 0 is none.
    None of these functions keeps a pointer into Goose memory after it returns,
    and none touches a socket: a connection reads from and writes to two memory
-   BIOs that tls_feed fills and tls_drain empties. Handing a connection to the
-   kernel is ktls.c's. Every function that can
+   BIOs that tls_feed fills and tls_drain empties. Every function that can
    fail clears this thread's OpenSSL error queue first, so after a failure the
    queue holds that failure's reasons, for tls_error_text. */
 #include <stdint.h>
@@ -258,10 +257,6 @@ int64_t tls_accept(int64_t h) {
     SSL *ssl = conn_new(h);
     if (!ssl) return 0;
     SSL_set_accept_state(ssl);
-    if (!ktls_attach(ssl)) {
-        SSL_free(ssl);
-        return 0;
-    }
     return (int64_t)(intptr_t)ssl;
 }
 
@@ -405,8 +400,7 @@ void tls_conn_free(int64_t h) {
 /* Takes bytes received from the peer: all of them, or TLS_FAILED. */
 int64_t tls_feed(int64_t h, tls_bytes data) {
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || data.len < 0 || ktls_owns(ssl, KTLS_RX)) return TLS_FAILED;
-    ktls_frame(ssl, data.data, data.len);
+    if (!ssl || data.len < 0) return TLS_FAILED;
     int64_t done = 0;
     while (done < data.len) {
         int64_t n = data.len - done;
@@ -474,7 +468,7 @@ int64_t tls_handshake(int64_t h) {
 int64_t tls_read(int64_t h, tls_buf buf) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || buf.len <= 0 || ktls_owns(ssl, KTLS_RX)) return TLS_FAILED;
+    if (!ssl || buf.len <= 0) return TLS_FAILED;
     size_t n = 0;
     int r = SSL_read_ex(ssl, buf.data, (size_t)buf.len, &n);
     int64_t s = r == 1 ? (int64_t)n : status_of(ssl, r);
@@ -487,7 +481,7 @@ int64_t tls_read(int64_t h, tls_buf buf) {
 int64_t tls_write(int64_t h, tls_bytes data) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || data.len < 0 || ktls_owns(ssl, KTLS_TX)) return TLS_FAILED;
+    if (!ssl || data.len < 0) return TLS_FAILED;
     if (data.len == 0) return 0;
     size_t n = 0;
     int r = SSL_write_ex(ssl, data.data, (size_t)data.len, &n);
@@ -498,7 +492,7 @@ int64_t tls_write(int64_t h, tls_bytes data) {
 int64_t tls_shutdown(int64_t h) {
     ERR_clear_error();
     SSL *ssl = (SSL *)(intptr_t)h;
-    if (!ssl || ktls_owns(ssl, KTLS_TX)) return TLS_FAILED;
+    if (!ssl) return TLS_FAILED;
     /* 0 means ours is sent and the peer's not yet seen, which is all a
        server that closes needs. */
     return SSL_shutdown(ssl) >= 0 ? 0 : TLS_FAILED;
@@ -543,7 +537,7 @@ void tls_group(int64_t h, gs_rref out) {
 /* Sets the key exchange groups the context's connections offer or accept, in
    order of preference: OpenSSL's names joined by ':'. 1, or 0 with the
    context unchanged when OpenSSL doesn't know a name. Call it before the
-   context accepts or connects, as for tls_kernel_enable. */
+   context accepts or connects. */
 uint8_t tls_use_groups(int64_t h, tls_bytes names) {
     ERR_clear_error();
     SSL_CTX *ctx = (SSL_CTX *)(intptr_t)h;

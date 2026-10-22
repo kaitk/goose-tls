@@ -145,8 +145,10 @@ fn drained(c: tls::Conn) -> u8[>..] {
 }
 
 fn main() {
-    let ctx, ok = tls::server(CRT, KEY, ["http/1.1"]);
-    assert(ok);
+    // The Goose server's context, which tls::server makes unless the package
+    // was built for libssl's.
+    let ctx = tls::Context { id: tls::g_ctx_new(CRT, KEY) };
+    assert(tls::ok(ctx));
     let c = tls::accept(ctx);
     let id = c.id;
     let flight = unhex(SERVER_FLIGHT);

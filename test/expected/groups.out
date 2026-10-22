@@ -13,6 +13,11 @@ use_groups P-256: true
 handshake: ok
 both sides name the same group: ok
   negotiated: secp256r1
+P-384 context: ok
+use_groups P-384: true
+handshake: ok
+both sides name the same group: ok
+  negotiated: secp384r1
 an unknown name: false
 handshake: ok
 both sides name the same group: ok

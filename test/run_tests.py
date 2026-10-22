@@ -16,8 +16,8 @@ A file with `// error: <message>` lines is a fixture that must not compile:
 `goose --multi-test --check` must exit 1, with each message in its diagnostics.
 
 test/tools/ holds what the scripts and tests use, not tests: the handshake
-tests' server and client (scripts/test-handshake.sh), crypto_files
-(scripts/test-crypto.sh), and the kTLS tests' peer package (peer/).
+tests' server and client (scripts/test-handshake.sh), and crypto_files
+(scripts/test-crypto.sh).
 test/check.goose holds what the tests share.
 
 Every failure is reported, with a count per area at the end. GOOSE or

@@ -21,7 +21,6 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 | | Feature | Notes |
 |---|---|---|
 | 🟢 | Server TLS 1.3 | A certificate chain and key from PEM, ALPN chosen by the server. Tested on macOS and Linux against OpenSSL 3.0, 3.6, and 4.0. |
-| 🟡 | kTLS on Linux | To be removed (task 007). The kernel takes the record layer after the handshake, for all three suites, with KeyUpdate and close_notify. The keys are tested against RFC 8448 and an OpenSSL client on OpenSSL 3.0, 3.6, and 4.0, and the fallback to user space on macOS and on a Linux kernel without kTLS; not yet run on a kernel that has it. |
 | 🟢 | A context per connection | Chosen by the program at the ClientHello, from the SNI name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's challenge certificate for `acme-tls/1`. |
 | 🟢 | Certificates replaced while running | Accept new connections from a new context; open ones keep theirs. |
 | 🟢 | Client TLS 1.3 | Verifies the server's chain against OpenSSL's trust store, or given certificates, and its name. |
@@ -103,22 +102,12 @@ All of it is in `tls.goose`, in the `tls` namespace.
 | `csr(k, names)` | A certificate signing request for DNS names, as DER |
 | `self_signed(k, names, days)` | A self-signed certificate, as PEM |
 | `challenge_certificate(k, name, digest)` | TLS-ALPN-01's certificate, whose `acmeIdentifier` extension holds `digest`, the key authorization's SHA-256, as PEM |
-| `kernel_supported() -> bool` | Whether this kernel has kTLS; false off Linux |
-| `use_kernel(ctx) -> bool` | Makes the context's new connections ready to move to the kernel; false where it has no kTLS |
-| `to_kernel(c, fd) -> i64` | Moves a connection to kTLS on its socket: the directions taken, `KERNEL_RX` and `KERNEL_TX` as bits, or `WANT_INPUT`, `PENDING`, `FAILED` |
-| `kernel_wants(c) -> i64` | After `WANT_INPUT` from `to_kernel`: how many bytes complete the record |
-| `in_kernel(c) -> i64` | The directions the kernel holds |
-| `kernel_record(c, fd, type, body) -> i64` | Takes a record the kernel received that isn't data: 0, `UPDATE_TX`, `CLOSED`, or `FAILED` |
-| `kernel_update_tx(c, fd) -> i64` | Moves the kernel's sending to the next keys, after a KeyUpdate sent through it |
 
 The statuses are negative, so a count is never mistaken for one: `WANT_INPUT` (feed
 more of what the socket gives), `CLOSED` (the peer sent close_notify), and `FAILED`
 (drain any alert, close the socket, and free the connection). A context that chooses
 per connection adds `HELLO` (read the ClientHello and choose); its steps are in
-[architecture](docs/architecture.md#a-context-per-connection). kTLS adds `PENDING`
-(read and drain first) and `UPDATE_TX` (send a KeyUpdate); its steps, and the records
-a program sends through the kernel (`CLOSE_NOTIFY`, `KEY_UPDATE`), are in
-[architecture](docs/architecture.md#ktls-on-linux).
+[architecture](docs/architecture.md#a-context-per-connection).
 
 The key and certificate calls have no statuses: one that fails leaves through `return
 ... from tls::run`, so they run inside `tls::run`, or the program doesn't compile
@@ -136,11 +125,10 @@ obsolete protocol or weak cipher.
 tls.goose            the package: namespace tls, the API over the shim
 tls.build            the sidecar: the shim is the CMake target goose_tls
 CMakeLists.txt       builds the shim
-cmake/openssl.cmake  finds OpenSSL, for the package and the test peer
+cmake/openssl.cmake  finds OpenSSL
 shim/tls.c           the C: OpenSSL's TLS API as handles, bytes, and status codes
-shim/ktls.c          kTLS: the kernel's keys, set on the program's socket
 shim/crypto.c        keys, signatures, and certificates for ACME
-shim/tls.h           what the three share
+shim/tls.h           what the two share
 test/                the tests by area, each a program with a golden file in
                      test/expected/, and check.goose, what they share
 test/certs/          a self-signed RSA-2048 pair for the tests, valid until 2125, and a
@@ -149,8 +137,6 @@ test/hellos/         ClientHellos recorded from openssl s_client 4.0.3, offering
                      only and TLS 1.3, each with ALPN h2 and http/1.1
 test/tools/          the scripts' programs: a server and a client with sockets of their
                      own (net.c), and crypto_files, which writes keys and certificates
-test/tools/peer/     a package for the kTLS tests: an OpenSSL client over memory BIOs,
-                     and the kernel's TLS 1.3 record layer in user space
 scripts/             goose.sh, and the test scripts
 docs/                architecture, decisions, development setup, Goose findings
 tasks/               task tracking (tasks/README.md)

@@ -22,10 +22,10 @@ with its reason and the trade-off that matters.
   returns the bytes to send, through memory BIOs. goose-http's loops differ by platform
   (epoll, io_uring, kqueue, IOCP), and a library that read sockets itself would need a
   path per loop. kTLS amended this on 2026-10-19; that amendment goes with kTLS, below.
-- **kTLS is retired (2026-10-22).** The package stops moving connections to the kernel:
-  `shim/ktls.c`, the `tls::*kernel*` calls and their constants, and goose-http's handoff,
-  record-control, and platform-stub paths go, in one coordinated change (task 007,
-  step 6). It replaces the decisions of 2026-10-19 that the kernel takes the socket's
+- **kTLS is retired (2026-10-22).** The package no longer moves connections to the
+  kernel: `shim/ktls.c`, the `tls::*kernel*` calls and their constants are gone, with
+  goose-http's handoff, record-control, and platform-stub paths in its matching change
+  (task 007, step 6). It replaces the decisions of 2026-10-19 that the kernel takes the socket's
   record layer after the handshake, with keys from OpenSSL's public callbacks (in git
   at `9f0a33b`). On the Ryzen 5 9600X (Bazzite, kernel 6.17.7, OpenSSL 3.5.9,
   AES-128-GCM, interleaved loopback h2load runs, goose-http's task 014.02), kTLS served
@@ -36,8 +36,8 @@ with its reason and the trade-off that matters.
   server written in Goose would have to carry too. Linux decides kTLS per socket
   direction, with no way back to user space between requests, and HTTP/2 streams share
   that decision. Reconsider it only for a measured workload, such as sendfile or NIC
-  offload, that warrants the cost. Until the removal lands, kTLS works as
-  [architecture](architecture.md#ktls-on-linux) describes.
+  offload, that warrants the cost. The kTLS tests' RFC 8448 vectors move to the Goose
+  server's key-schedule tests.
 - **Handles are raw pointers (2026-10-19).** A `tls::Context` or `tls::Conn` holds the
   address of OpenSSL's object, and using one after `tls::free` is undefined behavior,
   documented and not checked. A checked table of handles would need a lock, since

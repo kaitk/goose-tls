@@ -1,6 +1,7 @@
 // The key exchange group: what a handshake negotiates by default, what a
-// server limited by use_groups negotiates with a default client, and the
-// names use_groups refuses. The default differs between OpenSSL releases, so
+// server limited by use_groups negotiates with a default client (for P-256
+// and P-384, after a HelloRetryRequest, since the client's shares are for
+// X25519MLKEM768 and X25519), and the names use_groups refuses. The default differs between OpenSSL releases, so
 // only whether it names one is printed.
 import std;
 import tls from "../../";
@@ -40,6 +41,11 @@ fn main() {
     print("use_groups P-256: ", tls::use_groups(p256, "P-256"));
     print("  negotiated: ", group(p256, client));
 
+    let p384, p384ok = tls::server(CRT, KEY, ["http/1.1"]);
+    check::that("P-384 context", p384ok);
+    print("use_groups P-384: ", tls::use_groups(p384, "P-384"));
+    print("  negotiated: ", group(p384, client));
+
     print("an unknown name: ", tls::use_groups(limited, "X25519:no-such-group"));
     tls::error_text();
     print("  still negotiates: ", group(limited, client));
@@ -50,4 +56,5 @@ fn main() {
     tls::free(plain);
     tls::free(limited);
     tls::free(p256);
+    tls::free(p384);
 }

@@ -1,9 +1,9 @@
 # 002: kTLS on Linux
 
-Status: cancelled (2026-10-22): kTLS is retired ([decisions](../docs/decisions.md)), and
-its removal is task 007's step 6. The package's side was built (2026-10-19) and passed
-on kernels with kTLS (2026-10-20); what follows describes it as it stands until the
-removal lands.
+Status: cancelled (2026-10-22): kTLS is retired ([decisions](../../docs/decisions.md))
+and its code removed (task 007's step 6). The package's side was built (2026-10-19)
+and passed on kernels with kTLS (2026-10-20); what follows describes it as it was, in
+git at `9f0a33b`.
 
 After the handshake, the kernel takes the record layer, so the program sends and
 receives plaintext on the socket, and `sendfile`, splice, and io_uring work again.
@@ -13,8 +13,8 @@ phase 3).
 
 ## Design
 
-Recorded in [decisions](../docs/decisions.md) (2026-10-19) and described for users in
-[architecture](../docs/architecture.md#ktls-on-linux):
+Recorded in decisions (2026-10-19) and described for users in architecture, both as
+they were at `9f0a33b`:
 
 - **Who touches the socket.** The shim sets `TCP_ULP` "tls" and
   `setsockopt(SOL_TLS, TLS_RX/TLS_TX)` on the program's descriptor and never reads or
