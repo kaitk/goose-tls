@@ -94,6 +94,20 @@ OpenSSL again:
 grep -l "$PWD\"" ~/.goose/build/pkg/local/*/*/wrapper/CMakeLists.txt
 ```
 
+### The server
+
+`tls::server` makes the TLS 1.3 server written in Goose (`server.goose`, over
+`shim/server.c`), unless `GOOSE_TLS_SERVER=openssl` was in the environment when CMake
+first configured the package's C; then it makes libssl's (task 007). The choice is
+cached with the rest of that configuration, so to switch, delete the package's build
+directory, as for `OPENSSL_ROOT_DIR`, or build with a `GOOSE_HOME` of its own, which
+keeps a whole Goose cache per choice. The tests run both builds this way:
+
+```sh
+scripts/test.sh
+GOOSE_TLS_SERVER=openssl GOOSE_HOME=$HOME/.goose-openssl scripts/test.sh
+```
+
 ## Tests
 
 `scripts/test.sh` runs everything:
@@ -164,3 +178,10 @@ docker run --rm -v "$PWD":/src:ro IMAGE sh -c \
 ```
 
 The copy leaves out `build/`, which holds the macOS compiler.
+
+### On Linux, from Windows
+
+WSL runs the tests on a checkout under `/mnt/c`. A worktree that Windows' git made has
+a Windows path in its `.git` file, which WSL's git can't follow ("not a git
+repository"); the tests don't need git, but `spikes/02-goose-server/run.sh` reads the
+commit from it, so give it `COMMIT` there (2026-10-22).

@@ -86,10 +86,10 @@ let SKIP_UNDECRYPTABLE = 1;
 let SKIP_ENCRYPTED = 2;
 let SKIP_MAX = 16384;
 
-// The largest ClientHello taken, as BoringSSL's limit for a handshake
-// message; bytes fed and not yet read, which bounds what a peer can make a
-// connection hold.
-let MAX_HELLO = 16384;
+// The largest ClientHello taken, its header and BoringSSL's limit for a
+// handshake message's body; and bytes fed and not yet read, which bounds what
+// a peer can make a connection hold.
+let MAX_HELLO = 4 + 16384;
 let MAX_FED = 1 << 18;
 
 // Record content types.
@@ -131,11 +131,16 @@ let S_SERVER_FINISHED = 8;
 let S_CLIENT_FINISHED = 9;
 let S_SHARED = 10;
 
-// AES-GCM's confidentiality limit, as rustls takes it: the server updates
-// its keys before sealing this many records under one (section 5.5).
-let AES_GCM_RECORDS = 1 << 23;
-// KeyUpdates in a row without application data, as BoringSSL bounds them.
+// AES-GCM's confidentiality limit, as rustls's TLS suites take it: the
+// server updates its keys before sealing this many records under one
+// (section 5.5).
+let AES_GCM_RECORDS = 1 << 24;
+// As BoringSSL bounds them: KeyUpdates in a row without application data,
+// empty application data records in a row, and user_canceled alerts in a
+// row, each of which a peer could send without end.
 let MAX_UPDATES = 32;
+let MAX_EMPTY = 32;
+let MAX_WARNINGS = 4;
 
 // What a step returns besides the API's statuses: go on.
 let AGAIN = 1;
@@ -168,6 +173,8 @@ struct ServerState {
     closed: bool,
     updates: i64,
     update_owed: bool,
+    empties: i64,
+    warnings: i64,
     // The ClientHello's records so far: where the next starts in the bytes
     // fed, the message's bytes in them, its length once known, and its
     // first four bytes.
@@ -222,7 +229,13 @@ fn alert(id: i64, st: ServerState&, level: i64, desc: i64) -> i64 {
         st.peer_closed = true;
         return CLOSED;
     }
-    if desc == ALERT_USER_CANCELED { return AGAIN; }
+    if desc == ALERT_USER_CANCELED {
+        st.warnings += 1;
+        guard st.warnings <= MAX_WARNINGS else {
+            return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, "too many user_canceled alerts");
+        }
+        return AGAIN;
+    }
     return fail(id, st, -1, R_ALERT + desc, "");
 }
 
@@ -631,18 +644,9 @@ fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
         g_out_put(id, CCS_RECORD);
         st.ccs_sent = true;
     }
-    var hb: u8[48] = [0; 48];
-    let empty = empty_hash(st.suite);
-    var ok = g_extract(id, S_EARLY, -1, -1) && derive(id, S_DERIVED, S_EARLY, "derived", empty) &&
-             g_extract(id, S_HANDSHAKE, S_DERIVED, S_SHARED);
-    g_wipe(id, S_SHARED);
-    g_wipe(id, S_EARLY);
-    let h1 = transcript(id, hb);
-    ok = ok && h1.len > 0 && derive(id, S_CLIENT_HS, S_HANDSHAKE, "c hs traffic", h1) &&
-         derive(id, S_SERVER_HS, S_HANDSHAKE, "s hs traffic", h1) &&
-         g_rec_keys(id, DIR_WRITE, S_SERVER_HS) && g_rec_keys(id, DIR_READ, S_CLIENT_HS);
-    guard ok else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the handshake keys"); }
+    guard handshake_keys(id, st.suite) else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the handshake keys"); }
     st.sealing = true;
+    var hb: u8[48] = [0; 48];
 
     var flight: u8[>..] = [];
     let ee = flight.len;
@@ -697,33 +701,61 @@ fn answer(id: i64, st: ServerState&, h: Hello&) -> i64 {
     end_vec(flight, cv_body, 3);
     g_tr_update(id, flight[cv..]);
 
-    let h3 = transcript(id, hb);
-    guard g_finished(id, S_SERVER_FINISHED, S_SERVER_HS, h3) else {
-        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "Finished");
+    guard server_finished(id, st.suite, flight) && send_sealed(id, CT_HANDSHAKE, flight) else {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the server's Finished");
     }
+    guard application_keys(id, st.suite) else {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the application keys");
+    }
+    st.phase = PH_FINISHED;
+    return AGAIN;
+}
+
+// The key schedule (RFC 8446, section 7.1), in three steps of the server's
+// flight. Each derives into C's slots and reads the transcript there.
+
+// Once the ServerHello is in the transcript and the shared secret in
+// S_SHARED: the handshake secrets, and the handshake keys each way.
+fn handshake_keys(id: i64, suite: i64) -> bool {
+    var hb: u8[48] = [0; 48];
+    let ok = g_extract(id, S_EARLY, -1, -1) && derive(id, S_DERIVED, S_EARLY, "derived", empty_hash(suite)) &&
+             g_extract(id, S_HANDSHAKE, S_DERIVED, S_SHARED);
+    g_wipe(id, S_SHARED);
+    g_wipe(id, S_EARLY);
+    let h = transcript(id, hb);
+    return ok && h.len > 0 && derive(id, S_CLIENT_HS, S_HANDSHAKE, "c hs traffic", h) &&
+           derive(id, S_SERVER_HS, S_HANDSHAKE, "s hs traffic", h) &&
+           g_rec_keys(id, DIR_WRITE, S_SERVER_HS) && g_rec_keys(id, DIR_READ, S_CLIENT_HS);
+}
+
+// Once the CertificateVerify is in the transcript: appends the server's
+// Finished message to flight and to the transcript.
+fn server_finished(id: i64, suite: i64, flight: u8[>..]&) -> bool {
+    var hb: u8[48] = [0; 48];
+    guard g_finished(id, S_SERVER_FINISHED, S_SERVER_HS, transcript(id, hb)) else { return false; }
     let fin = flight.len;
     put8(flight, HS_FINISHED);
-    put24(flight, hash_len(st.suite));
+    put24(flight, hash_len(suite));
     g_public(id, S_SERVER_FINISHED, flight);
-    g_tr_update(id, flight[fin..]);
-    guard send_sealed(id, CT_HANDSHAKE, flight) else {
-        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "sealing the flight");
-    }
+    return g_tr_update(id, flight[fin..]);
+}
 
-    // The client's Finished will cover exactly this transcript, so what it
-    // must hold, and the application secrets, are known now.
-    let h4 = transcript(id, hb);
-    ok = derive(id, S_DERIVED, S_HANDSHAKE, "derived", empty) && g_extract(id, S_MASTER, S_DERIVED, -1) &&
-         derive(id, S_CLIENT_AP, S_MASTER, "c ap traffic", h4) &&
-         derive(id, S_SERVER_AP, S_MASTER, "s ap traffic", h4) &&
-         g_finished(id, S_CLIENT_FINISHED, S_CLIENT_HS, h4) && g_rec_keys(id, DIR_WRITE, S_SERVER_AP);
+// Once the server's Finished is in the transcript: the client's Finished
+// will cover exactly this transcript, so what it must hold, and the
+// application secrets, are known now, and the server sends under its
+// application key. Wipes the handshake's secrets and frees the transcript.
+fn application_keys(id: i64, suite: i64) -> bool {
+    var hb: u8[48] = [0; 48];
+    let h = transcript(id, hb);
+    let ok = h.len > 0 && derive(id, S_DERIVED, S_HANDSHAKE, "derived", empty_hash(suite)) &&
+             g_extract(id, S_MASTER, S_DERIVED, -1) && derive(id, S_CLIENT_AP, S_MASTER, "c ap traffic", h) &&
+             derive(id, S_SERVER_AP, S_MASTER, "s ap traffic", h) &&
+             g_finished(id, S_CLIENT_FINISHED, S_CLIENT_HS, h) && g_rec_keys(id, DIR_WRITE, S_SERVER_AP);
     for s in [S_DERIVED, S_HANDSHAKE, S_MASTER, S_SERVER_HS, S_CLIENT_HS, S_SERVER_AP, S_SERVER_FINISHED] {
         g_wipe(id, s);
     }
     g_hs_drop_transcript(id);
-    guard ok else { return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the application keys"); }
-    st.phase = PH_FINISHED;
-    return AGAIN;
+    return ok;
 }
 
 // The k-th protocol, from 1, in the context's ALPN list.
@@ -767,11 +799,21 @@ fn record_step(id: i64, st: ServerState&) -> i64 {
     st.skip = 0;
     let inner = r >> 32;
     let n = r & 0xffffffff;
+    // A handshake message split across records admits no other content
+    // between its pieces (section 5.1).
+    guard inner == CT_HANDSHAKE || st.hs.len == 0 else {
+        return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, "a record inside a handshake message");
+    }
     if inner == CT_DATA {
         guard st.phase == PH_OPEN else {
             return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, "data before the client's Finished");
         }
         st.updates = 0;
+        st.warnings = 0;
+        st.empties = if n == 0 { st.empties + 1 } else { 0 };
+        guard st.empties <= MAX_EMPTY else {
+            return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, "too many empty records");
+        }
         return AGAIN;
     }
     if inner == CT_ALERT {

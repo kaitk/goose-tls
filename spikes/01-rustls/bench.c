@@ -2,17 +2,24 @@
    OpenSSL clients in the same process, bytes moved in memory, no sockets.
 
    PROVIDER is openssl, aws-lc-rs, or ring (which server srv_*.c was linked
-   in says which library), GROUPS default or x25519: what the client offers,
-   and for OpenSSL what the server accepts too. The client is always the
-   system's OpenSSL, so its share of the work is the same for every server.
-   Each mode prints one line of key=value pairs.
+   in says which library; goose for spike 02's), GROUPS default or x25519:
+   what the client offers, and for OpenSSL what the server accepts too. The
+   client is always the system's OpenSSL, so its share of the work is the
+   same for every server. Each mode prints one line of key=value pairs.
 
      check          one handshake and request: the group, suite, and ALPN
      idle N         N server connections, each handshaken, given a 200 B
                     request and an 8,545 B response, then its client freed:
-                    the heap (glibc's in-use bytes) and VmRSS they hold
+                    the heap (glibc's in-use bytes), glibc's mmapped bytes,
+                    and VmRSS they hold
      inflight N     N server connections stopped after their first flight:
-                    ClientHello read, ServerHello to Finished sent
+                    ClientHello read, ServerHello to Finished sent and drained
+     queued N       the same, with the flight left waiting for drain
+     empty N        N server connections, before any byte is fed
+     peak N         N handshakes: the most OpenSSL's allocator holds above its
+                    level while the server answers a ClientHello
+     churn N        three rounds of N connections, each given a 64 KiB
+                    response and freed: the heap and RSS kept after them
      hs N           N full handshakes: the time in server calls
      enc MIB        16 KB records encrypted by the server
      dec MIB        16 KB records decrypted by the server
@@ -48,7 +55,38 @@ static void die(const char *what) {
     exit(1);
 }
 
+/* OpenSSL's allocations, counted in peak mode through CRYPTO_set_mem_functions:
+   what is held now, and the most held since the last reset. */
+static size_t mem_now, mem_peak;
+static void *track_malloc(size_t n, const char *file, int line) {
+    (void)file, (void)line;
+    size_t *p = malloc(n + 16);
+    if (!p) return NULL;
+    *p = n;
+    mem_now += n;
+    if (mem_now > mem_peak) mem_peak = mem_now;
+    return (char *)p + 16;
+}
+static void *track_realloc(void *q, size_t n, const char *file, int line) {
+    if (!q) return track_malloc(n, file, line);
+    size_t *p = (size_t *)((char *)q - 16), old = *p;
+    p = realloc(p, n + 16);
+    if (!p) return NULL;
+    *p = n;
+    mem_now = mem_now - old + n;
+    if (mem_now > mem_peak) mem_peak = mem_now;
+    return (char *)p + 16;
+}
+static void track_free(void *q, const char *file, int line) {
+    (void)file, (void)line;
+    if (!q) return;
+    size_t *p = (size_t *)((char *)q - 16);
+    mem_now -= *p;
+    free(p);
+}
+
 static size_t heap(void) { return mallinfo2().uordblks; }
+static size_t mapped(void) { return mallinfo2().hblkhd; }
 static long rss_kb(void) {
     FILE *f = fopen("/proc/self/status", "r");
     char line[256];
@@ -150,6 +188,8 @@ static void *server_new(void) {
 int main(int argc, char **argv) {
     if (argc < 4) die("usage: bench PROVIDER GROUPS MODE [ARGS]");
     const char *provider = argv[1], *groups = argv[2], *mode = argv[3];
+    if (strcmp(mode, "peak") == 0 && !CRYPTO_set_mem_functions(track_malloc, track_realloc, track_free))
+        die("OpenSSL allocated before its allocator could be counted");
     long a = argc > 4 ? atol(argv[4]) : 1000, b = argc > 5 ? atol(argv[5]) : 1;
     const char *dir = getenv("CERTS") ? getenv("CERTS") : ".";
     char path[1024];
@@ -182,29 +222,79 @@ int main(int argc, char **argv) {
     srv_free(s0);
     t_srv = 0;
 
-    if (strcmp(mode, "idle") == 0 || strcmp(mode, "inflight") == 0) {
-        int inflight = mode[0] == 'i' && mode[1] == 'n';
+    if (strcmp(mode, "idle") == 0 || strcmp(mode, "inflight") == 0 || strcmp(mode, "queued") == 0 ||
+        strcmp(mode, "empty") == 0) {
+        int inflight = mode[0] == 'i' && mode[1] == 'n', queued = mode[0] == 'q', empty = mode[0] == 'e';
         void **s = calloc((size_t)a, sizeof *s);
-        size_t h0 = heap();
+        size_t h0 = heap(), m0 = mapped();
         long r0 = rss_kb();
         for (long i = 0; i < a; i++) {
             s[i] = server_new();
+            if (empty) continue;
             SSL *c = client_new();
-            if (inflight) {
+            if (inflight || queued) {
                 SSL_do_handshake(c);
                 to_server(c, s[i]);
                 if (S(srv_handshake(s[i])) != SRV_WANT) die("handshake ended early");
-                discard(s[i]);
+                if (inflight) discard(s[i]);
             } else {
                 handshake(s[i], c);
                 exchange(s[i], c, 1);
             }
             SSL_free(c);
         }
+        size_t h1 = heap(), m1 = mapped();
+        long r1 = rss_kb();
+        printf(" n=%ld heap_per_conn=%.0f mmap_per_conn=%.0f rss_per_conn=%.0f\n", a, (double)(h1 - h0) / a,
+               ((double)m1 - (double)m0) / a, (double)(r1 - r0) * 1024 / a);
+        return 0;
+    }
+    if (strcmp(mode, "peak") == 0) {
+        /* The most OpenSSL's allocator holds above its level before the
+           server's call that answers the ClientHello, while that call runs:
+           the transient a handshake adds. */
+        size_t most = 0, total = 0;
+        for (long i = 0; i < a; i++) {
+            void *s = server_new();
+            SSL *c = client_new();
+            SSL_do_handshake(c);
+            to_server(c, s);
+            size_t before = mem_now;
+            mem_peak = mem_now;
+            if (S(srv_handshake(s)) != SRV_WANT) die("handshake ended early");
+            size_t rise = mem_peak - before;
+            total += rise;
+            if (rise > most) most = rise;
+            srv_free(s);
+            SSL_free(c);
+        }
+        printf(" n=%ld peak_mean=%.0f peak_max=%zu\n", a, (double)total / a, most);
+        return 0;
+    }
+    if (strcmp(mode, "churn") == 0) {
+        /* Rounds of N connections held at once, each given a request and a
+           64 KiB response, then all freed: what the heap and RSS keep after
+           the last round, against before the first. */
+        static uint8_t big[65536];
+        memset(big, 'b', sizeof big);
+        void **s = calloc((size_t)a, sizeof *s);
+        size_t h0 = heap();
+        long r0 = rss_kb();
+        for (int round = 0; round < 3; round++) {
+            for (long i = 0; i < a; i++) {
+                s[i] = server_new();
+                SSL *c = client_new();
+                handshake(s[i], c);
+                exchange(s[i], c, 1);
+                if (S(srv_write(s[i], big, sizeof big)) != (int64_t)sizeof big) die("server write");
+                to_client(s[i], c);
+                SSL_free(c);
+            }
+            for (long i = 0; i < a; i++) srv_free(s[i]);
+        }
         size_t h1 = heap();
         long r1 = rss_kb();
-        printf(" n=%ld heap_per_conn=%.0f rss_per_conn=%.0f\n", a, (double)(h1 - h0) / a,
-               (double)(r1 - r0) * 1024 / a);
+        printf(" n=%ld heap_kept=%zd rss_kept=%ld\n", a, (ssize_t)(h1 - h0), (r1 - r0) * 1024);
         return 0;
     }
     if (strcmp(mode, "hs") == 0) {

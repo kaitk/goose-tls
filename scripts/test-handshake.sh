@@ -52,6 +52,8 @@ for tool in echo_server client; do
 done
 "$openssl" req -x509 -newkey rsa:2048 -nodes -keyout "$work/server.key" -out "$work/server.crt" \
     -days 1 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" 2>/dev/null
+"$openssl" req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout "$work/ec.key" \
+    -out "$work/ec.crt" -days 1 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost" 2>/dev/null
 echo "client: $("$openssl" version)"
 
 server=
@@ -63,11 +65,13 @@ stop() {
     server=
 }
 trap stop EXIT
-# Starts the server with its mode and options; its output goes to $log.
+# Starts the server with its mode and options, and the RSA pair, or the one
+# cert_file and key_file name; its output goes to $log.
+cert_file= key_file=
 start() {
     stop
     log="$work/server-$(echo "$*" | tr ' ' '-').log"
-    "$work/echo_server" "$port" "$work/server.crt" "$work/server.key" "$@" >"$log" 2>&1 &
+    "$work/echo_server" "$port" "${cert_file:-$work/server.crt}" "${key_file:-$work/server.key}" "$@" >"$log" 2>&1 &
     server=$!
     i=0
     until grep -q "listening" "$log" 2>/dev/null; do
@@ -154,6 +158,46 @@ refused_alpn -alpn h2 && pass "h2 offered: refused with no_application_protocol"
     fail "h2 offered: not refused with no_application_protocol"
 got=$(s_client '' | grep -E '^(ALPN protocol|No ALPN)' | head -1)
 [ "$got" = "No ALPN negotiated" ] && pass "none offered: $got" || fail "none offered: $got"
+
+echo
+echo "== Suites, groups, signatures, and a HelloRetryRequest"
+# What a connection with these s_client options negotiated, once it echoed:
+# its suite, its group, the server's signature, and how many ServerHellos
+# came (two after a HelloRetryRequest); or "no echo".
+negotiated() {
+    out=$(s_client 'ping\nbye\n' -ign_eof -msg "$@")
+    if ! printf '%s\n' "$out" | grep -q '^ping$'; then
+        echo "no echo"
+        return
+    fi
+    suite=$(printf '%s\n' "$out" | grep -m1 '^New, ' | sed 's/.*Cipher is //')
+    group=$(printf '%s\n' "$out" | grep -m1 -i 'negotiated tls1.3 group' | sed 's/.*: *//')
+    sig=$(printf '%s\n' "$out" | grep -m1 'Peer signature type' | sed 's/.*: *//')
+    hellos=$(printf '%s\n' "$out" | grep -c '<<< .*ServerHello' || :)
+    echo "$suite $group $sig $hellos"
+}
+# want is a pattern for negotiated's line.
+check_negotiated() {
+    want=$1
+    shift
+    got=$(negotiated "$@")
+    case $got in $want) pass "$*: $got" ;; *) fail "$*: $got, not $want" ;; esac
+}
+for suite in TLS_AES_128_GCM_SHA256 TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256; do
+    check_negotiated "$suite *" -ciphersuites "$suite"
+done
+check_negotiated "* X25519MLKEM768 * 1" -groups X25519MLKEM768
+check_negotiated "* X25519 * 1" -groups X25519
+check_negotiated "* secp256r1 * 1" -groups P-256
+check_negotiated "* secp384r1 * 1" -groups P-384
+# P-521, which the server lacks, shared first: a HelloRetryRequest for X25519.
+check_negotiated "* X25519 * 2" -groups P-521:X25519
+check_negotiated "* RSA-PSS 1" -sigalgs rsa_pss_rsae_sha256:ecdsa_secp256r1_sha256
+cert_file=$work/ec.crt key_file=$work/ec.key
+start echo
+check_negotiated "* ECDSA 1" -sigalgs ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256
+cert_file= key_file=
+start echo
 
 echo
 echo "== HTTP/1.1 with curl ($("$curl" --version | head -1 | cut -d' ' -f1-2))"

@@ -3,6 +3,7 @@
    ALPN chosen from the server's list, two memory BIOs, and a BIO's buffer
    freed once it's empty. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <openssl/bio.h>
@@ -38,6 +39,10 @@ int srv_init(const char *provider, const char *groups, const char *chain_pem, co
     SSL_CTX_set_options(ctx, SSL_OP_NO_COMPRESSION | SSL_OP_CIPHER_SERVER_PREFERENCE);
     SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS);
     if (strcmp(groups, "x25519") == 0 && SSL_CTX_set1_groups_list(ctx, "X25519") != 1) return 0;
+    /* TICKETS=0 issues none, for spike 02's comparison; by default the
+       server sends OpenSSL's two, as goose-tls's shim does. */
+    const char *tickets = getenv("TICKETS");
+    if (tickets && strcmp(tickets, "0") == 0 && SSL_CTX_set_num_tickets(ctx, 0) != 1) return 0;
     BIO *cb = BIO_new_mem_buf(chain_pem, -1), *kb = BIO_new_mem_buf(key_pem, -1);
     X509 *leaf = PEM_read_bio_X509(cb, NULL, NULL, NULL);
     EVP_PKEY *pkey = PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL);

@@ -706,6 +706,16 @@ uint8_t tlsg_ks_check(int64_t h, int64_t s, tls_bytes received) {
            CRYPTO_memcmp(received.data, c->hs->slot[s], (size_t)received.len) == 0;
 }
 
+/* Sets slot[s] to known bytes, for test/server/rfc8448.goose, which takes
+   the shared secret from RFC 8448's trace. */
+uint8_t tlsg_ks_set(int64_t h, int64_t s, tls_bytes value) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, s) || value.len <= 0 || value.len > SLOT_CAP) return 0;
+    memcpy(c->hs->slot[s], value.data, (size_t)value.len);
+    c->hs->slot_len[s] = (uint8_t)value.len;
+    return 1;
+}
+
 void tlsg_ks_wipe(int64_t h, int64_t s) {
     gconn *c = CONN(h);
     if (!slot_ok(c, s)) return;
