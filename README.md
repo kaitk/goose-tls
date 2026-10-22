@@ -10,28 +10,35 @@ event loop moves the bytes. Its first user is
 A server built on goose-tls is meant to be its own reverse proxy: one binary that gets
 its certificates, terminates TLS, and serves, as well as running behind Caddy or nginx.
 ACME itself, which gets and renews the certificates, is a package of its own on top of
-goose-tls; the last four rows below are what it needs from this one.
+goose-tls; the last four features below are what it needs from this one.
 
 How it works is in [architecture](docs/architecture.md), the choices behind it in
 [decisions](docs/decisions.md), and the plan in [tasks](tasks/README.md).
 
-## Status
+## Features
 
-🟢 works · 🟡 partial or next · 🔴 not yet
+- **TLS 1.3 server**, written in Goose over libcrypto: a certificate chain and an EC
+  P-256 or RSA key from PEM, ALPN chosen by the server, and X25519MLKEM768, X25519,
+  P-256, and P-384. libssl's server is a build option (`GOOSE_TLS_SERVER=openssl`).
+- **Session tickets**: stateless, two after a full handshake, with keys turned every two
+  hours; resumption with `psk_dhe_ke`.
+- **A context per connection**, chosen by the program at the ClientHello from the SNI
+  name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's
+  challenge certificate for `acme-tls/1`.
+- **Certificates replaced while running**: new connections take the new context; open
+  ones keep theirs.
+- **TLS 1.3 client** over libssl, which verifies the server's chain, against OpenSSL's
+  trust store or given certificates, and its name.
+- **Keys, signatures, and certificates for ACME**: an EC P-256 key, ES256 signatures for
+  JWS, a CSR, and the TLS-ALPN-01 challenge certificate.
 
-| | Feature | Notes |
-|---|---|---|
-| 🟢 | Server TLS 1.3 | The Goose server: a certificate chain and an EC P-256 or RSA key from PEM, ALPN chosen by the server, X25519MLKEM768, X25519, P-256, and P-384. Tested on Linux with OpenSSL 3.5.5 and on macOS with 3.6.5 and 4.0.3, against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer, and with the golden tests on Windows with OpenSSL 3.6.5. libssl's server by build option, tested the same way (task 007). |
-| 🟢 | Session tickets | Stateless, two after a full handshake, with ticket keys turned every two hours; resumption with `psk_dhe_ke`. Tested as the server above. |
-| 🟢 | A context per connection | Chosen by the program at the ClientHello, from the SNI name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's challenge certificate for `acme-tls/1`. |
-| 🟢 | Certificates replaced while running | Accept new connections from a new context; open ones keep theirs. |
-| 🟢 | Client TLS 1.3 | Verifies the server's chain against OpenSSL's trust store, or given certificates, and its name. |
-| 🟢 | Keys, signatures, and certificates for ACME | An EC P-256 key, ES256 signatures for JWS, a CSR, and the TLS-ALPN-01 challenge certificate, checked against `openssl`. |
+Tested against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer on Linux
+(OpenSSL 3.5.5) and macOS (3.6.5 and 4.0.3); the golden tests also pass on Windows
+(3.6.5).
 
 ## Performance
 
-The Goose server against libssl's, per server connection, with session tickets on
-(task 007, [the server's overhead cut](tasks/007-goose-server/README.md#the-servers-overhead-cut)):
+The Goose server against libssl's, per server connection, with session tickets on:
 
 | | Goose server | libssl |
 |---|---:|---:|
@@ -41,13 +48,12 @@ The Goose server against libssl's, per server connection, with session tickets o
 | Server CPU, resumed handshake | 131.9 µs | 206.5 µs |
 | Server CPU, json-like request | 2.23 µs | 3.35 µs |
 
-Measured 2026-10-22 on a Ryzen 7 5800X3D, Ubuntu 26.04 in WSL2 (kernel
-6.18.54.1), OpenSSL 3.5.5, Goose v2026.3, goose-tls `36b4b9b`: one process with
-in-memory OpenSSL clients, X25519MLKEM768, RSA-2048, each figure the median of 5
-interleaved runs pinned to one CPU. `v0.0.4` measured 648.8 µs, 150.5 µs, and 2.42 µs
-for the three CPU figures, and memory within 14 B of these. The RSA signature is most of a full
-handshake on either server. Not yet measured: a server process under load over the
-network (task 007, step 7).
+Measured 2026-10-22 on a Ryzen 7 5800X3D, Ubuntu 26.04 in WSL2, OpenSSL 3.5.5, Goose
+v2026.3, goose-tls `36b4b9b`: one process with in-memory OpenSSL clients,
+X25519MLKEM768, RSA-2048, each figure the median of 5 interleaved runs pinned to one
+CPU ([details](tasks/007-goose-server/README.md#the-servers-overhead-cut)). The RSA
+signature is most of a full handshake on either server. Not yet measured: a server
+under load over the network.
 
 ## Quick start
 
@@ -82,7 +88,7 @@ fn main() {
 goose build server.goose
 ```
 
-The tag `v0.0.4` has everything in the table above. It replaced libssl's server with the
+The tag `v0.0.4` has every feature above. It replaced libssl's server with the
 Goose server and removed kTLS's calls; `v0.0.3` is the last release with both.
 
 `test/tools/echo_server.goose` is a whole server, and `test/tools/client.goose` a whole
