@@ -11,46 +11,33 @@ with its reason and the trade-off that matters.
   that imports that module declares goose-tls in its root file (goose-http's task 014,
   2026-10-11; repository created 2026-10-19).
 - **Bindings, not TLS in Goose.** Constant-time cryptography, the record layer, and
-  X.509 are out of scope. HttpArena's rules also require a standard TLS stack (its
-  `json-tls` implementation rules, checked at `2d85137`, 2026-10-18).
+  X.509 are out of scope. To be superseded for the server's connections by "A TLS 1.3
+  server in Goose over libcrypto", below, once spike 02 passes; cryptography and X.509
+  stay OpenSSL's. Corrected 2026-10-22: this entry said HttpArena requires a standard TLS
+  stack (its `json-tls` implementation rules, read at `2d85137`, 2026-10-18). At
+  HttpArena `f020b9b` that rule applies only to entries of type `standard` and
+  `infrastructure`; goose-http's entry is of type `engine`, which has no specific rules
+  (task 007).
 - **No I/O in the package.** A connection's state takes the bytes the program read and
   returns the bytes to send, through memory BIOs. goose-http's loops differ by platform
   (epoll, io_uring, kqueue, IOCP), and a library that read sockets itself would need a
-  path per loop. Amended for kTLS, below.
-- **kTLS keeps the package off the socket's data path (2026-10-19).** This amends "No
-  I/O in the package": after the handshake, the shim takes the socket's descriptor from
-  the program and sets socket options on it, `TCP_ULP` "tls", then
-  `setsockopt(SOL_TLS, TLS_RX)` and `TLS_TX` with the traffic keys, and again after a
-  KeyUpdate. It never reads or writes the socket. The program's loop, epoll or io_uring,
-  then sends and receives plaintext on it, and sends the two control records the kernel
-  can't make itself (close_notify, and a KeyUpdate) with `sendmsg`. The handshake's
-  bytes still move through memory BIOs and the program, so every loop keeps one path.
-  Rejected: OpenSSL owning the socket through a socket BIO from the start, which turns
-  kTLS on by itself (`SSL_OP_ENABLE_KTLS`) but puts the handshake's I/O in the shim and
-  breaks the io_uring loop, whose reads and writes are submitted and completed by the
-  ring. Nor does OpenSSL 3.0 to 4.x offer a public call that starts kTLS on an existing
-  connection or exports the kernel's keys; OpenSSL 3.5's QUIC callbacks give secrets
-  but replace the record layer. The trade-off: the shim follows OpenSSL's keys and
-  sequence numbers itself (the next decision), and a program that moves a connection to
-  the kernel handles its non-data records (`docs/architecture.md`).
-- **The kernel's keys from OpenSSL's public callbacks (2026-10-19).** The shim takes the
-  application traffic secrets from the keylog callback (`SSL_CTX_set_keylog_callback`,
-  public since 1.1.1), counts each direction's records from the message callback's
-  `SSL3_RT_HEADER` reports (`SSL_set_msg_callback`) since its keys last changed, and
-  derives key, IV, and salt with RFC 8446's HKDF-Expand-Label through `EVP_KDF`'s HKDF.
-  It follows a KeyUpdate the same way, on either side of the switch ("traffic upd").
-  Every call is in OpenSSL 3.0's API; the tests check the result against RFC 8448's
-  traces and against an OpenSSL client, on 3.0.13, 3.6.5, and 4.0.3. The callbacks are
-  set only on a context that asks for kTLS (`tls::use_kernel`), so other connections
-  pay nothing, and the secrets are wiped when the connection is freed. The switch
-  happens only at a record boundary of the bytes fed, and only once OpenSSL holds no
-  unread plaintext and no unsent bytes, so nothing read past the handshake is lost.
-  Receiving moves first: then OpenSSL can still send and answer a KeyUpdate with
-  `SSL_key_update`, while the other order would leave OpenSSL reading a KeyUpdate it
-  must answer with keys it no longer holds. A suite or kernel the switch fails on leaves
-  the connection in user space. The trade-off: the shim depends on the order in which
-  OpenSSL reports records and key changes, which is behavior, not a documented contract;
-  the tests catch a change on each OpenSSL the package supports.
+  path per loop. kTLS amended this on 2026-10-19; that amendment goes with kTLS, below.
+- **kTLS is retired (2026-10-22).** The package stops moving connections to the kernel:
+  `shim/ktls.c`, the `tls::*kernel*` calls and their constants, and goose-http's handoff,
+  record-control, and platform-stub paths go, in one coordinated change (task 007,
+  step 6). It replaces the decisions of 2026-10-19 that the kernel takes the socket's
+  record layer after the handshake, with keys from OpenSSL's public callbacks (in git
+  at `9f0a33b`). On the Ryzen 5 9600X (Bazzite, kernel 6.17.7, OpenSSL 3.5.9,
+  AES-128-GCM, interleaved loopback h2load runs, goose-http's task 014.02), kTLS served
+  small `/json` responses about 10% faster (3.16-3.19 M against 2.84-2.92 M requests/s)
+  but 16 KB ones 44% slower (112-113 K against 196-202 K requests/s), the extra cost
+  mainly elsewhere in the kernel's send path. It also needs a second record-processing
+  path, captured secrets, handoff states, and key updates ordered across layers, which a
+  server written in Goose would have to carry too. Linux decides kTLS per socket
+  direction, with no way back to user space between requests, and HTTP/2 streams share
+  that decision. Reconsider it only for a measured workload, such as sendfile or NIC
+  offload, that warrants the cost. Until the removal lands, kTLS works as
+  [architecture](architecture.md#ktls-on-linux) describes.
 - **Handles are raw pointers (2026-10-19).** A `tls::Context` or `tls::Conn` holds the
   address of OpenSSL's object, and using one after `tls::free` is undefined behavior,
   documented and not checked. A checked table of handles would need a lock, since
@@ -72,8 +59,7 @@ with its reason and the trade-off that matters.
   bookworm 3.0.x (`buildpack-deps:bookworm`, `debian:bookworm-slim`). 4.0 is current,
   and Homebrew's `openssl` is 4.0, but every function the shim calls is in both; the
   tests pass against 3.0.13, 3.6.5, and 4.0.3. OpenSSL is on every Linux distribution
-  and in every Docker base image, and from 3.0 can hand the record layer to the kernel
-  on Linux (`SSL_OP_ENABLE_KTLS`). Rejected, from goose-http's task 014: BoringSSL
+  and in every Docker base image. Rejected, from goose-http's task 014: BoringSSL
   (used by h2o and other fast servers, but no stable API or releases), rustls-ffi
   (needs a Rust toolchain to build), and BearSSL (TLS 1.2 at most, so it fails
   HttpArena's TLS 1.3 check). snowtime-native uses rustls with aws-lc-rs. The trade-off:
@@ -178,58 +164,52 @@ with its reason and the trade-off that matters.
 
 The decisions above stay in force until these land.
 
-- **Connections over our own Rust library on rustls (2026-10-20; agreed, pending the
-  CPU measurement).** goose-tls's TLS moves from OpenSSL to a Rust crate in this
-  repository, over rustls with the aws-lc-rs provider, built as a static library that
-  exports the C functions `tls.goose` declares today. OpenSSL holds about 30 KB an idle
-  connection and 63 KB a handshake in flight, with no setting to reduce either, and
-  goose-http's TLS server used the most memory of the json-tls entries measured
-  (272 MiB against 152-188 MiB for the Rust ones, goose-http's tasks 014.02 and 058).
-  Spike 01 (task 005) measured rustls at 7.8 KB an idle connection against 28.5 KB, and
-  8.3 KB a handshake in flight against 58.6 KB, with 15% less server CPU a handshake
-  and 26% less a request. It becomes settled once this library, through goose-http,
-  shows the same or better CPU and less memory, measured as task 006 says; if CPU is
-  worse, it comes back here with the numbers. The design, and the rustls APIs it rests
-  on, checked against their sources, are in task 006. It replaces:
-  - "OpenSSL, through its 3.0 API": the library is rustls, with aws-lc-rs's
-    cryptography; OpenSSL is needed only by the tests' peer and command-line checks.
-  - "No I/O in the package" keeps its meaning, but the memory BIOs give way to buffers
-    the crate owns around rustls's unbuffered connection, freed once empty, as "A
-    connection keeps no buffers between records" frees the BIOs'.
-  - "Linked through a CMake target": `goose_tls` stays the target, and builds the crate
-    with cargo, or takes a release's prebuilt library, instead of finding OpenSSL.
-  - "The kernel's keys from OpenSSL's public callbacks": rustls gives each direction's
-    key, IV, and sequence number at the handoff, and the next keys after a KeyUpdate
-    (`dangerous_into_kernel_connection`, `KernelConnection`), so the HKDF, the
-    callbacks, and the record counting go; both directions move to the kernel together.
-  - "A client verifies against OpenSSL's store or the program's certificates": the
-    system's store through `rustls-platform-verifier`, which is the platform's own on
-    macOS and Windows, or the program's certificates.
-  - "The context is chosen in Goose, at a paused handshake" keeps its API: rustls's
-    `Acceptor` pauses at the ClientHello in place of OpenSSL's client hello callback.
-  - "ACME's crypto in its protocols' forms" keeps its forms, made with rcgen and
-    aws-lc-rs instead of OpenSSL.
+- **A TLS 1.3 server in Goose over libcrypto (2026-10-22; agreed, pending spike 02).**
+  goose-tls's server connections move from libssl to a TLS 1.3 server whose protocol
+  and record layer are written in this package, Goose by default, over libcrypto's EVP
+  for every cryptographic primitive: AEAD, hashes, HMAC and HKDF, key exchange,
+  signatures, and random bytes. C in `shim/` stays small: it adapts EVP, and owns what
+  Goose can't, such as native handles, reference counts, and buffers that outlive a
+  call, where that is simpler or safer than a Goose workaround. The reason is memory:
+  libssl holds 28.5 KB per idle connection and 58.6 KB per handshake in flight, with no
+  setting that reduces either (spike 01, task 005), and goose-http's TLS server used the
+  most memory of the json-tls entries measured (272 MiB against 152-188 MiB for the Rust
+  ones, goose-http's tasks 014.02 and 058). rustls, measured at 7.8 KB and 8.3 KB, shows
+  what a small TLS 1.3 server holds; the target is at most 10,000 bytes per idle
+  connection and per drained-flight connection at 4,000 held, with no CPU regression
+  against OpenSSL beyond the runs' spread. Spike 02 decides: if it misses the bar,
+  OpenSSL stays the deployed server and task 007 records what limits it. The plan,
+  the gates, and the progress are in task 007.
+  - OpenSSL stays for the cold path (PEM loading, a DER chain and an `EVP_PKEY` per
+    context), the client, ACME's crypto, the tests' peer, and a server alternative
+    selected at build time, kept passing the common tests, for rollback: a backend
+    change happens between deployments, never by retrying a connection.
+  - TLS 1.3 only, with the three suites in the server's order; X25519MLKEM768 where
+    libcrypto has ML-KEM (3.5 or later), X25519, and P-256, set by `tls::use_groups`;
+    ECDSA P-256 and RSA keys, signing with `ecdsa_secp256r1_sha256` and
+    `rsa_pss_rsae_sha256`. Left out: TLS 1.2, accepting early data, client
+    certificates, PSK-only resumption, and kTLS.
+  - Session tickets, stateless, with a current and a previous ticket key per context
+    and a bounded key lifetime (proposed: a new issuing key every 7,200 seconds), follow
+    the full server immediately, in both backends.
+  - It replaces "Bindings, not TLS in Goose" for the server's connections; "The context
+    is chosen in Goose, at a paused handshake" keeps its API, with the package's own
+    ClientHello parser in place of OpenSSL's callback; and "Key exchange" keeps
+    `use_groups` and `group`, with the package's own default groups.
 
-  Rejected: rustls-ffi, which the spike used, since it sets no key-exchange groups,
-  exports no secrets for kTLS, has no stateless tickets, and its `read_tls` refuses
-  input while 16 KB of plaintext waits, so `tls::feed` couldn't take everything; and
-  staying on OpenSSL, for its memory. The trade-offs: a server now fails a client whose
-  ALPN offers none of its protocols with `no_application_protocol`, as RFC 7301 asks,
-  where OpenSSL's answered without ALPN (agreed 2026-10-21); and building from source
-  needs a Rust toolchain, which prebuilt libraries in each release take away for the
-  platforms they cover.
-
-  The provider is aws-lc-rs, with X25519MLKEM768 first, and ring a cargo feature
-  (agreed 2026-10-21). It is chosen again after the measurement through goose-http;
-  before relying on ring, which ran AES-GCM much faster in spike 01, find out why.
-
-  Only the package's C functions, `tls_*`, are global in its library (agreed
-  2026-10-21). After cargo builds it, the build makes every other symbol local, Rust's
-  `std`, `core`, `alloc`, `compiler_builtins`, and `rust_eh_personality` among them, so
-  that two Rust packages each link their own copy of `std` into one program: on Linux
-  with `ld -r` into one object and `objcopy --keep-global-symbol` (or a version
-  script), on macOS with `ld -r -exported_symbols_list`. On Windows (MSVC) a `.lib` has
-  no clean way to do it, and it stays open: likely a DLL there, or the limit accepted.
-  Rejected: a `cdylib` per package, a shared library shipped with every program; and
-  one static library per program combining every Rust package, made by the build,
-  which needs Goose's package build to change.
+  Rejected: the Rust library over rustls that task 006 designed (agreed 2026-10-20,
+  dropped 2026-10-22, not merged), since the package takes no Rust dependency in its
+  build: it needed cargo or prebuilt libraries per platform, and a step that hides the
+  Rust standard library's symbols, which had no answer yet on Windows. And staying on
+  libssl, for its memory. The trade-offs: this package now owns a TLS state machine,
+  whose correctness and security rest on its narrow scope, known-answer vectors,
+  tlsfuzzer, fuzzing, sanitizers, and the OpenSSL alternative rather than on a
+  maintained TLS library; and its memory and speed rest on libcrypto's per-object
+  costs, which spike 02 measures.
+- **ALPN with no match fails the handshake (2026-10-21, kept 2026-10-22).** A client
+  that offers ALPN but none of the server's protocols gets the `no_application_protocol`
+  alert, as RFC 7301, section 3.2, requires, from both the Goose server and the OpenSSL
+  alternative. Today's shim answers such a client without ALPN. A client that offers no
+  ALPN still connects, with none. The trade-off: a client that offers only protocols
+  the server lacks can no longer connect; HttpArena's clients offer what the server
+  speaks. Lands with task 007's server.

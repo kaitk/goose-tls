@@ -76,11 +76,18 @@ Several agents work in these repositories at once (2026-10-20).
 
 This package is where the Goose packages keep TLS's C ([decisions](docs/decisions.md)).
 
-- The cryptography, the record layer, and X.509 are OpenSSL's. Don't write them in
+- Cryptographic primitives and X.509 are OpenSSL's: libcrypto's EVP for ciphers,
+  hashes, HMAC and HKDF, key exchange, signatures, and random bytes. Don't write them in
   Goose or in the shim.
-- The C in `shim/` only adapts OpenSSL's API to Goose: opaque handles, bytes in and
-  bytes out, and error codes. Logic that doesn't need OpenSSL's types, such as
-  configuration, certificate selection, and ACME's protocol, is Goose.
+- The TLS 1.3 server's protocol and record layer are this package's own, written in
+  Goose by default (agreed 2026-10-22, pending spike 02; task 007). Until spike 02
+  passes and the server lands, connections run on libssl, which also keeps the client,
+  PEM loading, and the server alternative selected at build time.
+- The C in `shim/` adapts OpenSSL's API to Goose: opaque handles, bytes in and bytes
+  out, and error codes. It may also own what Goose can't hold, such as native handles,
+  reference counts, and byte buffers that outlive a call, where that is simpler or
+  safer than a Goose workaround. Protocol decisions, configuration, certificate
+  selection, and ACME's protocol are Goose.
 - The package does no I/O of its own on a connection. The program's event loop moves
   the bytes; the shim never touches a socket, so the same code serves epoll, io_uring,
   kqueue, and IOCP.
@@ -98,7 +105,8 @@ This package is where the Goose packages keep TLS's C ([decisions](docs/decision
   program whose printed output a golden file in `test/expected/` checks, `// error:`
   fixtures for code that must not compile, and a runner that batches them with
   `goose --multi-test`. Handshakes are checked against `openssl s_client` and
-  `curl`.
+  `curl`; the Goose server also against RFC 8448's traces, tlsfuzzer, and fuzzing
+  (task 007).
 
 ## Commits
 

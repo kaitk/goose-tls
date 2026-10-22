@@ -1,14 +1,18 @@
 # 006: Connections over rustls
 
-Status: in-progress (design agreed 2026-10-20, pending the CPU measurement; the
-library is started on the branch `rustls-lib`)
+Status: cancelled (2026-10-22). The package takes no Rust dependency in its build;
+task 007 writes the server in Goose over libcrypto instead. The library started on the
+branch `rustls-lib` was never merged or pushed, and is left as it is. What follows is
+the design as it stood, kept for its map of rustls's API, which task 007 reads as a
+peer implementation.
 
 goose-tls moves from OpenSSL to a small Rust library of its own over rustls, built as a
 static library with the C ABI the shim has today, so that `tls.goose` changes as little
 as possible. The reason is memory: OpenSSL holds about 30 KB a connection with no
 setting that reduces it, and goose-http's TLS server uses the most memory of the
-entries measured on HttpArena's json-tls. The decision, and what it replaces, is in
-[decisions](../docs/decisions.md) ("Connections over our own Rust library on rustls").
+entries measured on HttpArena's json-tls. The decision was in
+[decisions](../docs/decisions.md) until 2026-10-22 ("Connections over our own Rust
+library on rustls", in git at `9f0a33b`).
 
 ## Why
 

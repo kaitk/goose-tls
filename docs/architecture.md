@@ -3,8 +3,11 @@
 How goose-tls works, for programs that use it. Why it works this way is in
 [decisions](decisions.md).
 
-This page describes the package over OpenSSL. A move to a Rust library over rustls,
-with the same API, is under way (task 006); until it lands, everything here holds.
+This page describes the package over OpenSSL's libssl. Pending: a TLS 1.3 server
+written in Goose over libcrypto replaces libssl for server connections, with the same
+API, once spike 02 passes; kTLS is removed; and a client offering ALPN without a
+protocol the server speaks will fail with `no_application_protocol` (task 007). Until
+these land, everything here holds.
 
 ## The parts
 

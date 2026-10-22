@@ -21,7 +21,7 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 | | Feature | Notes |
 |---|---|---|
 | 🟢 | Server TLS 1.3 | A certificate chain and key from PEM, ALPN chosen by the server. Tested on macOS and Linux against OpenSSL 3.0, 3.6, and 4.0. |
-| 🟡 | kTLS on Linux | The kernel takes the record layer after the handshake, for all three suites, with KeyUpdate and close_notify. The keys are tested against RFC 8448 and an OpenSSL client on OpenSSL 3.0, 3.6, and 4.0, and the fallback to user space on macOS and on a Linux kernel without kTLS; not yet run on a kernel that has it. |
+| 🟡 | kTLS on Linux | To be removed (task 007). The kernel takes the record layer after the handshake, for all three suites, with KeyUpdate and close_notify. The keys are tested against RFC 8448 and an OpenSSL client on OpenSSL 3.0, 3.6, and 4.0, and the fallback to user space on macOS and on a Linux kernel without kTLS; not yet run on a kernel that has it. |
 | 🟢 | A context per connection | Chosen by the program at the ClientHello, from the SNI name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's challenge certificate for `acme-tls/1`. |
 | 🟢 | Certificates replaced while running | Accept new connections from a new context; open ones keep theirs. |
 | 🟢 | Client TLS 1.3 | Verifies the server's chain against OpenSSL's trust store, or given certificates, and its name. |

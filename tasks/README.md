@@ -46,15 +46,15 @@ for the latest measurements.
 ## Order
 
 Task 001, server TLS, is done: goose-http's HTTP/1.1 over TLS (its task 014) and
-HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, is in
-progress: the package's side is built, and what remains needs a Linux kernel with kTLS
-and goose-http's `http.tls` module. Task 003, done, added the hooks an outside ACME
+HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, is built
+and passes on kernels with kTLS, but kTLS is to be removed (2026-10-22, task 007), so
+its open items won't be done. Task 003, done, added the hooks an outside ACME
 package needs (goose-rest's task 049): a certificate per connection, a certificate
 swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
 connection's memory BIO buffers once they're empty (goose-http's task 058); a release
 with it is open. Task 005, done, measured rustls against OpenSSL (spike 01): rustls
-used under a third of the memory per connection, and less CPU. Task 006 builds on it:
-connections move from OpenSSL to a Rust library of the package's own over rustls, agreed
-pending the library's own CPU measurement, and replace the OpenSSL parts of tasks 001
-to 004 once it lands.
+used under a third of the memory per connection, and less CPU. Task 006, a Rust library
+over rustls, was cancelled on 2026-10-22. Task 007 replaces it: a TLS 1.3 server in
+Goose over libcrypto, pending its spike (02), with session tickets after it, kTLS
+removed, and OpenSSL kept as a build-time alternative.
 

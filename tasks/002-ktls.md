@@ -1,7 +1,9 @@
 # 002: kTLS on Linux
 
-Status: in-progress (the package's side is built, 2026-10-19, and passes on a kernel
-with kTLS, 2026-10-20; goose-http's loops and the measurements are open)
+Status: cancelled (2026-10-22): kTLS is retired ([decisions](../docs/decisions.md)), and
+its removal is task 007's step 6. The package's side was built (2026-10-19) and passed
+on kernels with kTLS (2026-10-20); what follows describes it as it stands until the
+removal lands.
 
 After the handshake, the kernel takes the record layer, so the program sends and
 receives plaintext on the socket, and `sendfile`, splice, and io_uring work again.
