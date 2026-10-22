@@ -13,6 +13,7 @@ METRICS = {
     "peak": ["peak_mean", "peak_max"],
     "churn": ["heap_kept", "rss_kept"],
     "hs": ["server_us_per_hs", "server_hs_per_s", "wall_hs_per_s"],
+    "resume": ["server_us_per_hs", "server_hs_per_s", "wall_hs_per_s"],
     "enc": ["mib_per_s"],
     "dec": ["mib_per_s"],
     "json": ["server_us_per_req", "server_req_per_s"],

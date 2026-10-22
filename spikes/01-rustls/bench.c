@@ -109,13 +109,25 @@ static char *slurp(const char *path) {
 }
 
 static SSL_CTX *cctx;
-static void client_init(const char *groups) {
+/* The session from the last ticket a client took, in resume mode. */
+static SSL_SESSION *sess;
+static int keep_session(SSL *c, SSL_SESSION *s) {
+    (void)c;
+    SSL_SESSION_free(sess);
+    sess = s;
+    return 1;
+}
+static void client_init(const char *groups, int resume) {
     cctx = SSL_CTX_new(TLS_client_method());
     if (!cctx || SSL_CTX_set_min_proto_version(cctx, TLS1_3_VERSION) != 1 ||
         SSL_CTX_set_alpn_protos(cctx, (const unsigned char *)"\x08http/1.1", 9) != 0)
         die("client context");
     if (strcmp(groups, "x25519") == 0 && SSL_CTX_set1_groups_list(cctx, "X25519") != 1) die("client groups");
-    SSL_CTX_set_session_cache_mode(cctx, SSL_SESS_CACHE_OFF);
+    /* OpenSSL hands a client its TLS 1.3 sessions only through the new
+       session callback, which a client cache turns on. */
+    SSL_CTX_set_session_cache_mode(cctx, resume ? SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE
+                                                : SSL_SESS_CACHE_OFF);
+    if (resume) SSL_CTX_sess_set_new_cb(cctx, keep_session);
 }
 static SSL *client_new(void) {
     SSL *c = SSL_new(cctx);
@@ -198,7 +210,7 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/key.pem", dir);
     char *key = slurp(path);
     if (!srv_init(provider, groups, chain, key)) die("server config");
-    client_init(groups);
+    client_init(groups, strcmp(mode, "resume") == 0);
     memset(request, 'q', sizeof request);
     memcpy(request, "GET /json/10?m=3 HTTP/1.1\r\n", 27);
     memset(response, 'r', sizeof response);
@@ -218,6 +230,8 @@ int main(int argc, char **argv) {
         printf(" group=%s suite=%s alpn=%.*s\n", g, suite, (int)alen, alpn ? alpn : "");
         return 0;
     }
+    /* A client freed without a shutdown marks its session not resumable. */
+    SSL_set_shutdown(c0, SSL_SENT_SHUTDOWN);
     SSL_free(c0);
     srv_free(s0);
     t_srv = 0;
@@ -304,6 +318,26 @@ int main(int argc, char **argv) {
             SSL *c = client_new();
             handshake(s, c);
             SV(srv_free(s));
+            SSL_free(c);
+        }
+        double wall = (double)(now() - w0) / 1e9, srv = (double)t_srv / 1e9;
+        printf(" n=%ld group=%s server_us_per_hs=%.1f server_hs_per_s=%.0f wall_hs_per_s=%.0f\n", a, g,
+               srv * 1e6 / a, a / srv, a / wall);
+        return 0;
+    }
+    if (strcmp(mode, "resume") == 0) {
+        /* As hs, each client resuming from the ticket the one before it
+           took, as a client that keeps its latest ticket does. */
+        if (!sess) die("no ticket to resume from");
+        uint64_t w0 = now();
+        for (long i = 0; i < a; i++) {
+            void *s = server_new();
+            SSL *c = client_new();
+            if (SSL_set_session(c, sess) != 1) die("client session");
+            handshake(s, c);
+            if (!SSL_session_reused(c)) die("not resumed");
+            SV(srv_free(s));
+            SSL_set_shutdown(c, SSL_SENT_SHUTDOWN);
             SSL_free(c);
         }
         double wall = (double)(now() - w0) / 1e9, srv = (double)t_srv / 1e9;

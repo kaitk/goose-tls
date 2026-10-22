@@ -2,10 +2,12 @@
 # Runs every measurement for both servers and both key exchanges, RUNS times
 # (default 5), interleaved as spike 01's run.sh does: each round runs each
 # mode once per configuration, in an order that rotates by round, each run its
-# own process pinned to CPU (default 2). Both servers issue no session
-# tickets (TICKETS=0 for OpenSSL's; the Goose server has none yet). MODES
-# replaces the list of modes. Prints the system first, then one line per run;
-# spike 01's summarize.py makes the tables. Build first with build.sh.
+# own process pinned to CPU (default 2). The Goose server issues session
+# tickets; OpenSSL's issues none with TICKETS=0, the default, as for spike
+# 02's go/no-go, and its default two with TICKETS=1. MODES replaces the list
+# of modes; resume, which needs tickets, isn't in the default list. Prints the
+# system first, then one line per run; spike 01's summarize.py makes the
+# tables. Build first with build.sh.
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -13,7 +15,7 @@ root=$(cd "$here/../.." && pwd)
 out=$root/build/spike-goose
 runs=${RUNS:-5}
 cpu=${CPU:-2}
-export CERTS=$out TICKETS=0
+export CERTS=$out TICKETS=${TICKETS:-0}
 . "$root/scripts/goose.sh"
 
 echo "# $(date -u +%Y-%m-%dT%H:%MZ) $(uname -r) $(nproc) CPUs: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2)"
