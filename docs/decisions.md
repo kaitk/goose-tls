@@ -167,8 +167,8 @@ Agreed 2026-10-22 pending spike 02, which passed the same day; released in `v0.0
 - **A TLS 1.3 server in Goose over libcrypto (2026-10-22).**
   goose-tls's server connections move from libssl to a TLS 1.3 server whose protocol
   and record layer are written in this package, Goose by default, over libcrypto's EVP
-  for every cryptographic primitive: AEAD, hashes, HMAC and HKDF, key exchange,
-  signatures, and random bytes. C in `shim/` stays small: it adapts EVP, and owns what
+  for every cryptographic primitive: AEAD, hashes, HMAC (and HKDF from it, below), key
+  exchange, signatures, and random bytes. C in `shim/` stays small: it adapts EVP, and owns what
   Goose can't, such as native handles, reference counts, and buffers that outlive a
   call, where that is simpler or safer than a Goose workaround. The reason is memory:
   libssl holds 28.5 KB per idle connection and 58.6 KB per handshake in flight, with no
@@ -196,6 +196,14 @@ Agreed 2026-10-22 pending spike 02, which passed the same day; released in `v0.0
     the process, and a 7,200-second ticket lifetime. The trade-off: a restart, or a
     second server process, makes every client's ticket a full handshake; sharing keys
     across processes waits for a caller that needs it (task 007).
+  - HKDF is libcrypto's HMAC, composed in `shim/server.c` (2026-10-22): Extract is one
+    HMAC, and Expand one HMAC block, since TLS 1.3 never asks it for more than
+    Hash.length bytes, as rustls's `HkdfUsingHmac` does. OpenSSL's HKDF makes an HMAC
+    context for every derivation, and its Extract fetches HMAC and the digest by name:
+    625 ns and 11 allocations an HKDF-Expand-Label on a reused HKDF context, against
+    280 ns and 1 on a reused HMAC context, and a handshake makes about 25 (task 007).
+    The trade-off: the key schedule's HKDF is this package's few lines, checked against
+    RFC 8448's traces, not libcrypto's.
   - It replaces "Bindings, not TLS in Goose" for the server's connections; "The context
     is chosen in Goose, at a paused handshake" keeps its API, with the package's own
     ClientHello parser in place of OpenSSL's callback; and "Key exchange" keeps

@@ -20,7 +20,8 @@ user space.
   decision is here.
 - `shim/server.c`: what the Goose server needs from C. It owns the memory that outlives
   a call, such as contexts, connections, and their byte queues, and calls libcrypto for
-  each primitive: AEAD, hashes, HKDF, key exchange, signatures, and random bytes.
+  each primitive: AEAD, hashes, HMAC (the key schedule's HKDF is composed from it), key
+  exchange, signatures, and random bytes.
   Secrets stay in C, in slots the Goose code names, and are cleansed when replaced or
   freed.
 - `shim/tls.c`: libssl's API as handles, bytes, and status codes, for clients and for

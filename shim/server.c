@@ -35,7 +35,6 @@
 #include <openssl/crypto.h>
 #include <openssl/err.h>
 #include <openssl/evp.h>
-#include <openssl/kdf.h>
 #include <openssl/params.h>
 #include <openssl/pem.h>
 #include <openssl/rand.h>
@@ -84,7 +83,6 @@ typedef struct {
    fetched per record or per handshake. */
 static struct {
     suite_t suites[3];
-    EVP_KDF *hkdf;
     EVP_MAC *hmac;
     int mlkem;
 } alg;
@@ -109,13 +107,12 @@ static void alg_init(void) {
         s->hash_len = s->md ? (size_t)EVP_MD_get_size(s->md) : 0;
         if (!s->cipher || !s->md) return;
     }
-    alg.hkdf = EVP_KDF_fetch(NULL, OSSL_KDF_NAME_HKDF, NULL);
     alg.hmac = EVP_MAC_fetch(NULL, OSSL_MAC_NAME_HMAC, NULL);
     EVP_KEM *kem = EVP_KEM_fetch(NULL, "ML-KEM-768", NULL);
     alg.mlkem = kem != NULL;
     EVP_KEM_free(kem);
     ERR_clear_error();
-    alg_ok = alg.hkdf && alg.hmac;
+    alg_ok = alg.hmac != NULL;
 }
 
 static int algs(void) { return CRYPTO_THREAD_run_once(&alg_once, alg_init) && alg_ok; }
@@ -316,10 +313,9 @@ typedef struct {
 
 typedef struct {
     EVP_MD_CTX *md;
-    /* HKDF and HMAC under the suite's hash for the key schedule, each made on
-       first use and freed with the transcript, so that a handshake waiting
-       for the client holds neither. */
-    EVP_KDF_CTX *kdf;
+    /* HMAC under the suite's hash for the key schedule, made on first use and
+       freed with the transcript, so that a handshake waiting for the client
+       holds none. */
     EVP_MAC_CTX *mac;
     uint8_t slot[SLOTS][SLOT_CAP];
     uint8_t slot_len[SLOTS];
@@ -387,17 +383,15 @@ static void dir_clear(direction *d) {
     OPENSSL_cleanse(d, sizeof *d);
 }
 
-static void kdf_free(handshake *hs) {
-    EVP_KDF_CTX_free(hs->kdf);
+static void mac_free(handshake *hs) {
     EVP_MAC_CTX_free(hs->mac);
-    hs->kdf = NULL;
     hs->mac = NULL;
 }
 
 static void hs_free(gconn *c) {
     if (!c->hs) return;
     EVP_MD_CTX_free(c->hs->md);
-    kdf_free(c->hs);
+    mac_free(c->hs);
     OPENSSL_free(c->hs->hello);
     OPENSSL_clear_free(c->hs, sizeof *c->hs);
     c->hs = NULL;
@@ -579,7 +573,7 @@ uint8_t tlsg_hs_begin(int64_t h, int64_t suite) {
         c->hs = OPENSSL_zalloc(sizeof *c->hs);
         if (!c->hs) return 0;
     }
-    kdf_free(c->hs);
+    mac_free(c->hs);
     if (!c->hs->md && !(c->hs->md = EVP_MD_CTX_new())) return 0;
     return EVP_DigestInit_ex2(c->hs->md, s->md, NULL) == 1;
 }
@@ -591,7 +585,7 @@ void tlsg_hs_drop_transcript(int64_t h) {
     if (c->hs) {
         EVP_MD_CTX_free(c->hs->md);
         c->hs->md = NULL;
-        kdf_free(c->hs);
+        mac_free(c->hs);
         OPENSSL_free(c->hs->hello);
         c->hs->hello = NULL;
         c->hs->hello_len = 0;
@@ -675,47 +669,49 @@ void tlsg_hello_kept(int64_t h, gs_rref out) {
 
 static int slot_ok(gconn *c, int64_t s) { return c->hs && s >= 0 && s < SLOTS; }
 
-/* An HKDF context with the suite's hash set: each new one fetches the
-   digest by name, so the key schedule reuses one per handshake. */
-static EVP_KDF_CTX *kdf_new(const suite_t *s) {
-    EVP_KDF_CTX *k = EVP_KDF_CTX_new(alg.hkdf);
+/* The key schedule's HKDF (RFC 5869) is HMAC under the suite's hash, on one
+   context per handshake, rather than OpenSSL's HKDF, which makes an HMAC
+   context for each derivation: Extract is HMAC(salt, IKM), and Expand, for
+   the at most Hash.length bytes that TLS 1.3 asks of it, is the first n
+   bytes of HMAC(PRK, info || 0x01). */
+static EVP_MAC_CTX *mac_new(const suite_t *s) {
+    EVP_MAC_CTX *m = EVP_MAC_CTX_new(alg.hmac);
     OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char *)EVP_MD_get0_name(s->md), 0),
+        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, (char *)EVP_MD_get0_name(s->md), 0),
         OSSL_PARAM_construct_end(),
     };
-    if (k && EVP_KDF_CTX_set_params(k, params) != 1) {
-        EVP_KDF_CTX_free(k);
+    if (m && EVP_MAC_CTX_set_params(m, params) != 1) {
+        EVP_MAC_CTX_free(m);
         return NULL;
     }
-    return k;
-}
-
-static EVP_KDF_CTX *hs_kdf(gconn *c) {
-    if (!c->hs->kdf) c->hs->kdf = kdf_new(c->suite);
-    return c->hs->kdf;
+    return m;
 }
 
 static EVP_MAC_CTX *hs_mac(gconn *c) {
-    handshake *hs = c->hs;
-    if (hs->mac) return hs->mac;
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string(OSSL_MAC_PARAM_DIGEST, (char *)EVP_MD_get0_name(c->suite->md), 0),
-        OSSL_PARAM_construct_end(),
-    };
-    hs->mac = EVP_MAC_CTX_new(alg.hmac);
-    if (hs->mac && EVP_MAC_CTX_set_params(hs->mac, params) != 1) {
-        EVP_MAC_CTX_free(hs->mac);
-        hs->mac = NULL;
-    }
-    return hs->mac;
+    if (!c->hs->mac) c->hs->mac = mac_new(c->suite);
+    return c->hs->mac;
 }
 
-/* RFC 8446, section 7.1: HKDF-Expand-Label(secret, label, context, n), on
-   an HKDF context with the suite's hash set. */
-static int expand_label(EVP_KDF_CTX *kctx, const uint8_t *secret, size_t secret_len, const char *label,
-                        size_t label_len, const uint8_t *context, size_t context_len, uint8_t *out, size_t n) {
+/* out = the first n bytes, at most Hash.length, of HMAC(key, a || b). */
+static int hmac(EVP_MAC_CTX *m, const suite_t *s, const uint8_t *key, size_t key_len, const uint8_t *a,
+                size_t a_len, const uint8_t *b, size_t b_len, uint8_t *out, size_t n) {
+    uint8_t full[EVP_MAX_MD_SIZE];
+    size_t len = 0;
+    int ok = m && n <= s->hash_len && EVP_MAC_init(m, key, key_len, NULL) == 1 &&
+             EVP_MAC_update(m, a, a_len) == 1 && (!b_len || EVP_MAC_update(m, b, b_len) == 1) &&
+             EVP_MAC_final(m, full, &len, sizeof full) == 1 && len == s->hash_len;
+    if (ok) memcpy(out, full, n);
+    OPENSSL_cleanse(full, sizeof full);
+    return ok;
+}
+
+/* RFC 8446, section 7.1: HKDF-Expand-Label(secret, label, context, n). */
+static int expand_label(EVP_MAC_CTX *m, const suite_t *s, const uint8_t *secret, size_t secret_len,
+                        const char *label, size_t label_len, const uint8_t *context, size_t context_len,
+                        uint8_t *out, size_t n) {
+    static const uint8_t one = 1;
     uint8_t info[2 + 1 + 255 + 1 + 255];
-    if (label_len > 249 || context_len > 255 || n > 0xffff) return 0;
+    if (label_len > 249 || context_len > 255) return 0;
     size_t k = 0;
     info[k++] = (uint8_t)(n >> 8);
     info[k++] = (uint8_t)n;
@@ -727,14 +723,7 @@ static int expand_label(EVP_KDF_CTX *kctx, const uint8_t *secret, size_t secret_
     info[k++] = (uint8_t)context_len;
     if (context_len) memcpy(info + k, context, context_len);
     k += context_len;
-    int mode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)secret, secret_len),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, info, k),
-        OSSL_PARAM_construct_end(),
-    };
-    return kctx && EVP_KDF_derive(kctx, out, n, params) == 1;
+    return hmac(m, s, secret, secret_len, info, k, &one, 1, out, n);
 }
 
 /* slot[dst] = HKDF-Extract(salt, ikm), where -1 for either means Hash.length
@@ -749,16 +738,8 @@ uint8_t tlsg_ks_extract(int64_t h, int64_t dst, int64_t salt, int64_t ikm) {
     size_t sl = salt == -1 ? hl : hs->slot_len[salt];
     const uint8_t *ip = ikm == -1 ? zeros : hs->slot[ikm];
     size_t il = ikm == -1 ? hl : hs->slot_len[ikm];
-    int mode = EVP_KDF_HKDF_MODE_EXTRACT_ONLY;
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void *)sp, sl),
-        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)ip, il),
-        OSSL_PARAM_construct_end(),
-    };
     uint8_t out[SLOT_CAP];
-    EVP_KDF_CTX *kctx = hs_kdf(c);
-    int ok = kctx && EVP_KDF_derive(kctx, out, hl, params) == 1;
+    int ok = hmac(hs_mac(c), c->suite, sp, sl, ip, il, NULL, 0, out, hl);
     if (ok) {
         memcpy(hs->slot[dst], out, hl);
         hs->slot_len[dst] = (uint8_t)hl;
@@ -775,7 +756,7 @@ uint8_t tlsg_ks_expand(int64_t h, int64_t dst, int64_t src, tls_bytes label, tls
     handshake *hs = c->hs;
     size_t hl = c->suite->hash_len;
     uint8_t out[SLOT_CAP];
-    int ok = expand_label(hs_kdf(c), hs->slot[src], hs->slot_len[src], (const char *)label.data,
+    int ok = expand_label(hs_mac(c), c->suite, hs->slot[src], hs->slot_len[src], (const char *)label.data,
                           (size_t)label.len, context.data, (size_t)context.len, out, hl);
     if (ok) {
         memcpy(hs->slot[dst], out, hl);
@@ -791,12 +772,11 @@ uint8_t tlsg_ks_finished(int64_t h, int64_t dst, int64_t src, tls_bytes hash) {
     gconn *c = CONN(h);
     if (!slot_ok(c, dst) || !slot_ok(c, src) || hash.len < 0) return 0;
     handshake *hs = c->hs;
-    size_t hl = c->suite->hash_len, n = 0;
-    uint8_t key[SLOT_CAP], out[EVP_MAX_MD_SIZE];
+    size_t hl = c->suite->hash_len;
     EVP_MAC_CTX *m = hs_mac(c);
-    int ok = expand_label(hs_kdf(c), hs->slot[src], hs->slot_len[src], "finished", 8, NULL, 0, key, hl) && m &&
-             EVP_MAC_init(m, key, hl, NULL) == 1 && EVP_MAC_update(m, hash.data, (size_t)hash.len) == 1 &&
-             EVP_MAC_final(m, out, &n, sizeof out) == 1 && n == hl;
+    uint8_t key[SLOT_CAP], out[SLOT_CAP];
+    int ok = expand_label(m, c->suite, hs->slot[src], hs->slot_len[src], "finished", 8, NULL, 0, key, hl) &&
+             hmac(m, c->suite, key, hl, hash.data, (size_t)hash.len, NULL, 0, out, hl);
     if (ok) {
         memcpy(hs->slot[dst], out, hl);
         hs->slot_len[dst] = (uint8_t)hl;
@@ -971,11 +951,11 @@ uint8_t tlsg_random(tls_buf out) { return out.len >= 0 && RAND_bytes(out.data, (
 
 static direction *dir_of(gconn *c, int64_t d) { return d == DIR_READ ? &c->rd : &c->wr; }
 
-static int dir_keys(EVP_KDF_CTX *kctx, gconn *c, direction *d, int enc) {
+static int dir_keys(EVP_MAC_CTX *m, gconn *c, direction *d, int enc) {
     const suite_t *s = c->suite;
     uint8_t key[32];
-    int ok = expand_label(kctx, d->secret, s->hash_len, "key", 3, NULL, 0, key, s->key_len) &&
-             expand_label(kctx, d->secret, s->hash_len, "iv", 2, NULL, 0, d->iv, 12);
+    int ok = expand_label(m, s, d->secret, s->hash_len, "key", 3, NULL, 0, key, s->key_len) &&
+             expand_label(m, s, d->secret, s->hash_len, "iv", 2, NULL, 0, d->iv, 12);
     if (ok && !d->c) ok = (d->c = EVP_CIPHER_CTX_new()) != NULL;
     ok = ok && EVP_CipherInit_ex2(d->c, s->cipher, key, NULL, enc, NULL) == 1;
     OPENSSL_cleanse(key, sizeof key);
@@ -989,7 +969,7 @@ uint8_t tlsg_rec_keys(int64_t h, int64_t d, int64_t s) {
     if (!slot_ok(c, s) || c->hs->slot_len[s] != c->suite->hash_len) return 0;
     direction *dir = dir_of(c, d);
     memcpy(dir->secret, c->hs->slot[s], c->suite->hash_len);
-    return (uint8_t)dir_keys(hs_kdf(c), c, dir, d == DIR_WRITE);
+    return (uint8_t)dir_keys(hs_mac(c), c, dir, d == DIR_WRITE);
 }
 
 /* A KeyUpdate: the direction's next secret (RFC 8446, section 7.2), and its
@@ -999,12 +979,12 @@ uint8_t tlsg_rec_update(int64_t h, int64_t d) {
     direction *dir = dir_of(c, d);
     size_t hl = c->suite->hash_len;
     uint8_t next[48];
-    EVP_KDF_CTX *kctx = c->hs ? hs_kdf(c) : kdf_new(c->suite);
-    int ok = dir->c && expand_label(kctx, dir->secret, hl, "traffic upd", 11, NULL, 0, next, hl);
+    EVP_MAC_CTX *m = c->hs ? hs_mac(c) : mac_new(c->suite);
+    int ok = dir->c && expand_label(m, c->suite, dir->secret, hl, "traffic upd", 11, NULL, 0, next, hl);
     if (ok) memcpy(dir->secret, next, hl);
     OPENSSL_cleanse(next, sizeof next);
-    ok = ok && dir_keys(kctx, c, dir, d == DIR_WRITE);
-    if (!c->hs) EVP_KDF_CTX_free(kctx);
+    ok = ok && dir_keys(m, c, dir, d == DIR_WRITE);
+    if (!c->hs) EVP_MAC_CTX_free(m);
     return (uint8_t)ok;
 }
 
@@ -1188,7 +1168,7 @@ uint8_t tlsg_ticket_issue(int64_t h, int64_t res, tls_bytes nonce, int64_t age_a
     uint8_t pt[2 + 1 + 48 + 8 + 4 + 1 + 255], sealed[sizeof pt + 16], head[TICKET_HEAD], key[64];
     pt[n++] = (uint8_t)(s->code >> 8), pt[n++] = (uint8_t)s->code, pt[n++] = (uint8_t)hl;
     int ok =
-        expand_label(hs_kdf(c), c->hs->slot[res], hl, "resumption", 10, nonce.data, (size_t)nonce.len, pt + n, hl);
+        expand_label(hs_mac(c), s, c->hs->slot[res], hl, "resumption", 10, nonce.data, (size_t)nonce.len, pt + n, hl);
     n += hl;
     for (int i = 7; i >= 0; i--) pt[n++] = (uint8_t)(now >> (8 * i));
     for (int i = 3; i >= 0; i--) pt[n++] = (uint8_t)(age_add >> (8 * i));

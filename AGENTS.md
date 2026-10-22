@@ -77,8 +77,9 @@ Several agents work in these repositories at once (2026-10-20).
 This package is where the Goose packages keep TLS's C ([decisions](docs/decisions.md)).
 
 - Cryptographic primitives and X.509 are OpenSSL's: libcrypto's EVP for ciphers,
-  hashes, HMAC and HKDF, key exchange, signatures, and random bytes. Don't write them in
-  Goose or in the shim.
+  hashes, HMAC, key exchange, signatures, and random bytes. Don't write them in Goose or
+  in the shim. The one exception is the key schedule's HKDF, which the shim composes from
+  libcrypto's HMAC ([decisions](docs/decisions.md)).
 - The TLS 1.3 server's protocol and record layer are this package's own, written in
   Goose (task 007, `v0.0.4`). libssl keeps the client, PEM loading, and the server
   alternative selected at build time.
