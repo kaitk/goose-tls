@@ -13,7 +13,7 @@ set -u
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 . "$root/scripts/goose.sh"
-: "${TLSFUZZER:?TLSFUZZER names the directory of tlsfuzzer's checkouts}"
+: "${TLSFUZZER:?TLSFUZZER names the directory of the tlsfuzzer checkouts}"
 port=${PORT:-19443}
 out=$root/build/tlsfuzzer
 mkdir -p "$out"
