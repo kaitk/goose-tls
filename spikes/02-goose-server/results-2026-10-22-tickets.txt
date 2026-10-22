@@ -1,0 +1,142 @@
+# 2026-10-22T06:29Z 6.18.54.1-microsoft-standard-WSL2 16 CPUs:  AMD Ryzen 7 5800X3D 8-Core Processor
+# OpenSSL 3.5.5 27 Jan 2026 (Library: OpenSSL 3.5.5 27 Jan 2026); Goose v2026.3; goose-tls 9bc8238; cc (Ubuntu 15.2.0-16ubuntu1) 15.2.0
+run=0 provider=goose groups=default mode=idle n=4000 heap_per_conn=2930 mmap_per_conn=0 rss_per_conn=3026
+run=0 provider=goose groups=x25519 mode=idle n=4000 heap_per_conn=2929 mmap_per_conn=0 rss_per_conn=3076
+run=0 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 mmap_per_conn=0 rss_per_conn=28532
+run=0 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21947 mmap_per_conn=0 rss_per_conn=21949
+run=0 provider=goose groups=default mode=inflight n=4000 heap_per_conn=3807 mmap_per_conn=0 rss_per_conn=3941
+run=0 provider=goose groups=x25519 mode=inflight n=4000 heap_per_conn=3806 mmap_per_conn=0 rss_per_conn=3913
+run=0 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58627 mmap_per_conn=0 rss_per_conn=57242
+run=0 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 mmap_per_conn=0 rss_per_conn=50679
+run=0 provider=goose groups=default mode=queued n=4000 heap_per_conn=6175 mmap_per_conn=0 rss_per_conn=6308
+run=0 provider=goose groups=x25519 mode=queued n=4000 heap_per_conn=5086 mmap_per_conn=0 rss_per_conn=5209
+run=0 provider=openssl groups=default mode=queued n=4000 heap_per_conn=61875 mmap_per_conn=0 rss_per_conn=60475
+run=0 provider=openssl groups=x25519 mode=queued n=4000 heap_per_conn=53854 mmap_per_conn=0 rss_per_conn=52475
+run=0 provider=goose groups=default mode=peak n=1000 peak_mean=10796 peak_max=12594
+run=0 provider=goose groups=x25519 mode=peak n=1000 peak_mean=10942 peak_max=12740
+run=0 provider=openssl groups=default mode=peak n=1000 peak_mean=61399 peak_max=61399
+run=0 provider=openssl groups=x25519 mode=peak n=1000 peak_mean=53413 peak_max=53413
+run=0 provider=goose groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=649.3 server_hs_per_s=1540 wall_hs_per_s=1016
+run=0 provider=goose groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=602.1 server_hs_per_s=1661 wall_hs_per_s=1231
+run=0 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=721.4 server_hs_per_s=1386 wall_hs_per_s=947
+run=0 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=669.1 server_hs_per_s=1494 wall_hs_per_s=1138
+run=0 provider=goose groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=150.6 server_hs_per_s=6641 wall_hs_per_s=2421
+run=0 provider=goose groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=102.8 server_hs_per_s=9731 wall_hs_per_s=4126
+run=0 provider=openssl groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=205.4 server_hs_per_s=4868 wall_hs_per_s=2136
+run=0 provider=openssl groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=151.7 server_hs_per_s=6591 wall_hs_per_s=3449
+run=0 provider=goose groups=default mode=json n=200000 conns=1000 server_us_per_req=2.44 server_req_per_s=409974
+run=0 provider=goose groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.43 server_req_per_s=410931
+run=0 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.31 server_req_per_s=301920
+run=0 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.37 server_req_per_s=296396
+run=1 provider=goose groups=x25519 mode=idle n=4000 heap_per_conn=2929 mmap_per_conn=0 rss_per_conn=3076
+run=1 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 mmap_per_conn=0 rss_per_conn=28532
+run=1 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21947 mmap_per_conn=0 rss_per_conn=21950
+run=1 provider=goose groups=default mode=idle n=4000 heap_per_conn=2930 mmap_per_conn=0 rss_per_conn=3025
+run=1 provider=goose groups=x25519 mode=inflight n=4000 heap_per_conn=3806 mmap_per_conn=0 rss_per_conn=3913
+run=1 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58627 mmap_per_conn=0 rss_per_conn=57242
+run=1 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 mmap_per_conn=0 rss_per_conn=50679
+run=1 provider=goose groups=default mode=inflight n=4000 heap_per_conn=3807 mmap_per_conn=0 rss_per_conn=3941
+run=1 provider=goose groups=x25519 mode=queued n=4000 heap_per_conn=5086 mmap_per_conn=0 rss_per_conn=5209
+run=1 provider=openssl groups=default mode=queued n=4000 heap_per_conn=61875 mmap_per_conn=0 rss_per_conn=60475
+run=1 provider=openssl groups=x25519 mode=queued n=4000 heap_per_conn=53854 mmap_per_conn=0 rss_per_conn=52475
+run=1 provider=goose groups=default mode=queued n=4000 heap_per_conn=6175 mmap_per_conn=0 rss_per_conn=6308
+run=1 provider=goose groups=x25519 mode=peak n=1000 peak_mean=10942 peak_max=12740
+run=1 provider=openssl groups=default mode=peak n=1000 peak_mean=61399 peak_max=61399
+run=1 provider=openssl groups=x25519 mode=peak n=1000 peak_mean=53413 peak_max=53413
+run=1 provider=goose groups=default mode=peak n=1000 peak_mean=10796 peak_max=12594
+run=1 provider=goose groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=601.0 server_hs_per_s=1664 wall_hs_per_s=1235
+run=1 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=721.2 server_hs_per_s=1387 wall_hs_per_s=946
+run=1 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=667.2 server_hs_per_s=1499 wall_hs_per_s=1141
+run=1 provider=goose groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=648.8 server_hs_per_s=1541 wall_hs_per_s=1017
+run=1 provider=goose groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=102.9 server_hs_per_s=9721 wall_hs_per_s=4141
+run=1 provider=openssl groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=208.2 server_hs_per_s=4802 wall_hs_per_s=2124
+run=1 provider=openssl groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=152.4 server_hs_per_s=6561 wall_hs_per_s=3446
+run=1 provider=goose groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=150.5 server_hs_per_s=6646 wall_hs_per_s=2421
+run=1 provider=goose groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.40 server_req_per_s=416206
+run=1 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.39 server_req_per_s=294819
+run=1 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.33 server_req_per_s=299873
+run=1 provider=goose groups=default mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=412630
+run=2 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 mmap_per_conn=0 rss_per_conn=28532
+run=2 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21947 mmap_per_conn=0 rss_per_conn=21949
+run=2 provider=goose groups=default mode=idle n=4000 heap_per_conn=2930 mmap_per_conn=0 rss_per_conn=3023
+run=2 provider=goose groups=x25519 mode=idle n=4000 heap_per_conn=2929 mmap_per_conn=0 rss_per_conn=3076
+run=2 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58627 mmap_per_conn=0 rss_per_conn=57242
+run=2 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 mmap_per_conn=0 rss_per_conn=50680
+run=2 provider=goose groups=default mode=inflight n=4000 heap_per_conn=3807 mmap_per_conn=0 rss_per_conn=3941
+run=2 provider=goose groups=x25519 mode=inflight n=4000 heap_per_conn=3806 mmap_per_conn=0 rss_per_conn=3913
+run=2 provider=openssl groups=default mode=queued n=4000 heap_per_conn=61875 mmap_per_conn=0 rss_per_conn=60475
+run=2 provider=openssl groups=x25519 mode=queued n=4000 heap_per_conn=53854 mmap_per_conn=0 rss_per_conn=52476
+run=2 provider=goose groups=default mode=queued n=4000 heap_per_conn=6175 mmap_per_conn=0 rss_per_conn=6308
+run=2 provider=goose groups=x25519 mode=queued n=4000 heap_per_conn=5086 mmap_per_conn=0 rss_per_conn=5209
+run=2 provider=openssl groups=default mode=peak n=1000 peak_mean=61399 peak_max=61399
+run=2 provider=openssl groups=x25519 mode=peak n=1000 peak_mean=53413 peak_max=53413
+run=2 provider=goose groups=default mode=peak n=1000 peak_mean=10796 peak_max=12594
+run=2 provider=goose groups=x25519 mode=peak n=1000 peak_mean=10942 peak_max=12740
+run=2 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=721.8 server_hs_per_s=1385 wall_hs_per_s=946
+run=2 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=673.1 server_hs_per_s=1486 wall_hs_per_s=1135
+run=2 provider=goose groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=648.5 server_hs_per_s=1542 wall_hs_per_s=1018
+run=2 provider=goose groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=603.1 server_hs_per_s=1658 wall_hs_per_s=1227
+run=2 provider=openssl groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=207.0 server_hs_per_s=4832 wall_hs_per_s=2129
+run=2 provider=openssl groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=152.8 server_hs_per_s=6547 wall_hs_per_s=3432
+run=2 provider=goose groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=149.7 server_hs_per_s=6682 wall_hs_per_s=2432
+run=2 provider=goose groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=102.3 server_hs_per_s=9780 wall_hs_per_s=4152
+run=2 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.32 server_req_per_s=301340
+run=2 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.40 server_req_per_s=293890
+run=2 provider=goose groups=default mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=413929
+run=2 provider=goose groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.42 server_req_per_s=413855
+run=3 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21947 mmap_per_conn=0 rss_per_conn=21950
+run=3 provider=goose groups=default mode=idle n=4000 heap_per_conn=2930 mmap_per_conn=0 rss_per_conn=3023
+run=3 provider=goose groups=x25519 mode=idle n=4000 heap_per_conn=2929 mmap_per_conn=0 rss_per_conn=3076
+run=3 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 mmap_per_conn=0 rss_per_conn=28532
+run=3 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 mmap_per_conn=0 rss_per_conn=50679
+run=3 provider=goose groups=default mode=inflight n=4000 heap_per_conn=3807 mmap_per_conn=0 rss_per_conn=3941
+run=3 provider=goose groups=x25519 mode=inflight n=4000 heap_per_conn=3806 mmap_per_conn=0 rss_per_conn=3913
+run=3 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58627 mmap_per_conn=0 rss_per_conn=57242
+run=3 provider=openssl groups=x25519 mode=queued n=4000 heap_per_conn=53854 mmap_per_conn=0 rss_per_conn=52475
+run=3 provider=goose groups=default mode=queued n=4000 heap_per_conn=6175 mmap_per_conn=0 rss_per_conn=6308
+run=3 provider=goose groups=x25519 mode=queued n=4000 heap_per_conn=5086 mmap_per_conn=0 rss_per_conn=5209
+run=3 provider=openssl groups=default mode=queued n=4000 heap_per_conn=61875 mmap_per_conn=0 rss_per_conn=60475
+run=3 provider=openssl groups=x25519 mode=peak n=1000 peak_mean=53413 peak_max=53413
+run=3 provider=goose groups=default mode=peak n=1000 peak_mean=10796 peak_max=12594
+run=3 provider=goose groups=x25519 mode=peak n=1000 peak_mean=10942 peak_max=12740
+run=3 provider=openssl groups=default mode=peak n=1000 peak_mean=61399 peak_max=61399
+run=3 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=667.6 server_hs_per_s=1498 wall_hs_per_s=1141
+run=3 provider=goose groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=647.5 server_hs_per_s=1544 wall_hs_per_s=1019
+run=3 provider=goose groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=602.1 server_hs_per_s=1661 wall_hs_per_s=1232
+run=3 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=721.3 server_hs_per_s=1386 wall_hs_per_s=947
+run=3 provider=openssl groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=152.7 server_hs_per_s=6549 wall_hs_per_s=3435
+run=3 provider=goose groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=150.0 server_hs_per_s=6667 wall_hs_per_s=2420
+run=3 provider=goose groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=102.6 server_hs_per_s=9742 wall_hs_per_s=4131
+run=3 provider=openssl groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=204.6 server_hs_per_s=4887 wall_hs_per_s=2152
+run=3 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.37 server_req_per_s=296985
+run=3 provider=goose groups=default mode=json n=200000 conns=1000 server_us_per_req=2.41 server_req_per_s=414336
+run=3 provider=goose groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.43 server_req_per_s=412141
+run=3 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.31 server_req_per_s=302549
+run=4 provider=goose groups=default mode=idle n=4000 heap_per_conn=2930 mmap_per_conn=0 rss_per_conn=3026
+run=4 provider=goose groups=x25519 mode=idle n=4000 heap_per_conn=2929 mmap_per_conn=0 rss_per_conn=3076
+run=4 provider=openssl groups=default mode=idle n=4000 heap_per_conn=28528 mmap_per_conn=0 rss_per_conn=28532
+run=4 provider=openssl groups=x25519 mode=idle n=4000 heap_per_conn=21947 mmap_per_conn=0 rss_per_conn=21949
+run=4 provider=goose groups=default mode=inflight n=4000 heap_per_conn=3807 mmap_per_conn=0 rss_per_conn=3941
+run=4 provider=goose groups=x25519 mode=inflight n=4000 heap_per_conn=3806 mmap_per_conn=0 rss_per_conn=3913
+run=4 provider=openssl groups=default mode=inflight n=4000 heap_per_conn=58627 mmap_per_conn=0 rss_per_conn=57242
+run=4 provider=openssl groups=x25519 mode=inflight n=4000 heap_per_conn=52059 mmap_per_conn=0 rss_per_conn=50679
+run=4 provider=goose groups=default mode=queued n=4000 heap_per_conn=6175 mmap_per_conn=0 rss_per_conn=6308
+run=4 provider=goose groups=x25519 mode=queued n=4000 heap_per_conn=5086 mmap_per_conn=0 rss_per_conn=5210
+run=4 provider=openssl groups=default mode=queued n=4000 heap_per_conn=61875 mmap_per_conn=0 rss_per_conn=60475
+run=4 provider=openssl groups=x25519 mode=queued n=4000 heap_per_conn=53854 mmap_per_conn=0 rss_per_conn=52475
+run=4 provider=goose groups=default mode=peak n=1000 peak_mean=10796 peak_max=12594
+run=4 provider=goose groups=x25519 mode=peak n=1000 peak_mean=10942 peak_max=12740
+run=4 provider=openssl groups=default mode=peak n=1000 peak_mean=61399 peak_max=61399
+run=4 provider=openssl groups=x25519 mode=peak n=1000 peak_mean=53413 peak_max=53413
+run=4 provider=goose groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=662.8 server_hs_per_s=1509 wall_hs_per_s=992
+run=4 provider=goose groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=605.2 server_hs_per_s=1652 wall_hs_per_s=1225
+run=4 provider=openssl groups=default mode=hs n=3000 group=X25519MLKEM768 server_us_per_hs=732.1 server_hs_per_s=1366 wall_hs_per_s=933
+run=4 provider=openssl groups=x25519 mode=hs n=3000 group=x25519 server_us_per_hs=696.0 server_hs_per_s=1437 wall_hs_per_s=1092
+run=4 provider=goose groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=154.1 server_hs_per_s=6490 wall_hs_per_s=2367
+run=4 provider=goose groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=103.4 server_hs_per_s=9669 wall_hs_per_s=4087
+run=4 provider=openssl groups=default mode=resume n=3000 group=X25519MLKEM768 server_us_per_hs=207.0 server_hs_per_s=4832 wall_hs_per_s=2122
+run=4 provider=openssl groups=x25519 mode=resume n=3000 group=x25519 server_us_per_hs=152.4 server_hs_per_s=6562 wall_hs_per_s=3437
+run=4 provider=goose groups=default mode=json n=200000 conns=1000 server_us_per_req=2.43 server_req_per_s=412231
+run=4 provider=goose groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=2.45 server_req_per_s=407684
+run=4 provider=openssl groups=default mode=json n=200000 conns=1000 server_us_per_req=3.36 server_req_per_s=297778
+run=4 provider=openssl groups=x25519 mode=json n=200000 conns=1000 server_us_per_req=3.36 server_req_per_s=298024

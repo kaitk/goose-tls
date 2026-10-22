@@ -185,9 +185,48 @@ about 3% of its 2.42 µs; trimming them is a possible gain, not part of the bar.
 - **Limits of the method:** the harness holds every connection in one process with
   its clients, as spike 01's did, so RSS includes the clients' share and glibc's
   retention; the Goose server's data stacks are per program, not per connection.
-  Session tickets are off on both servers; task 007's step 5 measures them on.
+  Session tickets are off on both servers here; the next section measures them on.
+
+## With session tickets
+
+Measured 2026-10-22 on the same machine and system, with session tickets on in both
+servers (task 007, step 5): goose-tls `9bc8238`, `TICKETS=1 RUNS=5 MODES="idle:4000
+inflight:4000 queued:4000 peak:1000 hs:3000 resume:3000 json:200000:1000" run.sh`,
+5 interleaved rounds pinned to CPU 2; `results-2026-10-22-tickets.txt` is the raw
+output. Both servers send two tickets after a full handshake, which the client reads
+inside the measured handshake. `resume` makes each client resume from the ticket the
+client before it took; OpenSSL's server here is spike 01's `srv_openssl.c` with
+libssl's default ticket key, not the package's rotating one. Medians, ranges where
+the runs differed.
+
+| Server | Groups | Full handshake | Resumed handshake | json-like request |
+|---|---|---:|---:|---:|
+| Goose | default | 648.8 µs (647.5-662.8) | 150.5 µs (149.7-154.1) | 2.42 µs (2.41-2.44) |
+| Goose | x25519 | 602.1 µs (601.0-605.2) | 102.8 µs (102.3-103.4) | 2.43 µs (2.40-2.45) |
+| OpenSSL | default | 721.4 µs (721.2-732.1) | 207.0 µs (204.6-208.2) | 3.32 µs (3.31-3.39) |
+| OpenSSL | x25519 | 669.1 µs (667.2-696.0) | 152.4 µs (151.7-152.8) | 3.37 µs (3.33-3.40) |
+
+| Server | Groups | Idle, 4,000 | Drained flight, 4,000 | Queued flight, 4,000 | Peak, mean and most |
+|---|---|---:|---:|---:|---:|
+| Goose | default | 2,930 B | 3,807 B | 6,175 B | 10,796 B, 12,594 B |
+| Goose | x25519 | 2,929 B | 3,806 B | 5,086 B | 10,942 B, 12,740 B |
+| OpenSSL | default | 28,528 B | 58,627 B | 61,875 B | 61,399 B |
+| OpenSSL | x25519 | 21,947 B | 52,059 B | 53,854 B | 53,413 B |
+
+- **CPU:** with tickets on, the Goose server's full handshake costs 10% less than
+  OpenSSL's, with either key exchange, and a resumed one 27% less with
+  X25519MLKEM768 and 33% less with X25519. A resumption costs the Goose server a
+  quarter of a full handshake, or a sixth with X25519: it skips the RSA signature,
+  and keeps the key exchange.
+- **What tickets cost:** against the tickets-off runs above, the full handshake rose
+  10 µs on the Goose server (1.6%) and 31 µs on OpenSSL's (4.4%). Those runs were an
+  hour apart rather than interleaved, so treat these differences as approximate.
+- **Memory:** an idle connection holds what it held without tickets: the resumption
+  secret is wiped once the tickets are sealed. A handshake in flight holds 65 B more,
+  and the peak 64 B more; the handshake state's two added secret slots are the likely
+  cause, not traced. OpenSSL's figures didn't change.
 
 ## Not done in this spike
 
-- Fuzzing the parser and the state machine, and tlsfuzzer (task 007, step 4).
-- A server-only process under load, and goose-http over this server (step 7).
+- A server-only process under load, and goose-http over this server (task 007,
+  step 7).

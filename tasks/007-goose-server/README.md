@@ -1,7 +1,9 @@
 # 007: A TLS 1.3 server in Goose over libcrypto
 
 Status: in-progress (direction agreed 2026-10-22; spike 02 passed its go/no-go on
-2026-10-22; the full server is under way on the branch `goose-server`)
+2026-10-22; the full server and its session tickets are on the branch `goose-server`,
+steps 1 to 6 done but for goose-http's client check; step 7, and merging, wait for
+the maintainer)
 
 goose-tls's server connections move from OpenSSL's libssl to a TLS 1.3 server written in
 Goose, with libcrypto's EVP for every cryptographic primitive. The reason is memory:
@@ -55,7 +57,7 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 
 ### 3. Spike 02: crypto and protocol
 
-Done 2026-10-22, but for fuzzing ([spike 02](../../spikes/02-goose-server/README.md)).
+Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 
 - [x] Each primitive's allocations after setup, use, and free: AES-GCM,
       ChaCha20-Poly1305, SHA-256 and SHA-384, HMAC and HKDF, X25519, X25519MLKEM768,
@@ -63,7 +65,7 @@ Done 2026-10-22, but for fuzzing ([spike 02](../../spikes/02-goose-server/README
 - [x] One full handshake and the record layer behind spike 01's `srv.h`, reusable in
       the server, and in it: X25519, X25519MLKEM768, P-256, and P-384; ECDSA and RSA
       certificates (`scripts/test-handshake.sh`)
-- [ ] The ClientHello parser under a fuzzer
+- [x] The ClientHello parser under a fuzzer: `fuzz/` (`fe7cb36`), see step 4
 - [x] The go/no-go measurement: passed. 2,929 B idle and 3,742 B with the flight
       drained at 4,000 held, against a bar of 10,000 B; 7.5% less CPU a handshake and
       27% less a json-like request than OpenSSL
@@ -75,22 +77,38 @@ Done 2026-10-22, but for fuzzing ([spike 02](../../spikes/02-goose-server/README
 - [x] The golden tests (hello, load, choose, replace, groups) pass on both builds,
       with OpenSSL peers and curl; RFC 8448's section 3 trace passes
       (`test/server/rfc8448.goose`)
-- [ ] RFC 8448's HelloRetryRequest trace (section 5), tlsfuzzer, and state-machine
-      fuzzing
-- [ ] Sanitizers on the shim and the generated C, debug and optimized builds
+- [x] RFC 8448's HelloRetryRequest trace (section 5): `test/server/rfc8448_hrr.goose`
+      (`fe7cb36`)
+- [x] tlsfuzzer's TLS 1.3 server scripts: [tlsfuzzer.md](tlsfuzzer.md), its six
+      findings fixed in `e7704f9`, the expected failures explained
+- [x] State-machine fuzzing: `fuzz/` (`fe7cb36`), libFuzzer with ASan and UBSan.
+      Ten minutes each on 2026-10-22 (5800X3D, WSL2), no findings: `fuzz_hello`
+      136,148,160 runs, `fuzz_conn` 2,919,257 runs, `fuzz_open` 1,375,642 runs, built
+      before the tickets' commit (`d0e859a`). A run with tickets is still to do
+- [x] Sanitizers on the shim and the generated C, debug and optimized builds:
+      `scripts/test-sanitizers.sh` (`b7fe12b`), all ten tests clean in both
 
 ### 5. Session tickets
 
-- [ ] Issue, resume, binders, rotation, expiry, and sharing across workers and
-      contexts; `s_client -sess_out`/`-sess_in` and tlsfuzzer's resumption scripts
-- [ ] Measured with tickets on, full and resumed
+- [x] Issue, resume, binders, rotation, expiry, and sharing across workers and
+      contexts: `test/server/tickets.goose`, RFC 8448's resumption master secret and
+      ticket PSK in `test/server/rfc8448.goose`; `s_client -sess_out`/`-sess_in` in
+      `scripts/test-handshake.sh`, resumed, resumed after a HelloRetryRequest, and
+      across the keys' turn on both builds, the server's ticket clock moved by the test
+- [x] tlsfuzzer's resumption scripts: [tlsfuzzer.md](tlsfuzzer.md); count-tickets and
+      connection-abort pass, session-resumption fails only its TLS 1.2 and `psk_ke`
+      probes, which the plan leaves out
+- [x] Measured with tickets on, full and resumed ([spike 02](../../spikes/02-goose-server/README.md#with-session-tickets)):
+      below
 
 ### 6. kTLS removed
 
 - [x] goose-tls's kTLS code, API, tests, and docs removed: branch `no-ktls`
       (`7ffb6f7`), whose `scripts/test.sh` passes on Linux (2026-10-22)
-- [ ] goose-http's handoff, record-control, and platform-stub paths removed: branch
-      `no-ktls` in goose-http, its suites to pass
+- [x] goose-http's handoff, record-control, and platform-stub paths removed: branch
+      `no-ktls` in goose-http (`d328c93b`), whose `scripts/test.sh` passes on Linux
+      (2026-10-22). Neither `no-ktls` branch is merged: goose-http's needs goose-tls's
+      first, and a pin moved to it, which waits for the maintainer
 - [ ] goose-http's suites and the client check (curl, wrk, h2load, oha; Chromium and
       Firefox once by hand), with versions, suite, group, ALPN, and resumption recorded
 
@@ -159,13 +177,33 @@ any of them.
   section 4.1.2).
 - **Errors are libssl's reasons**, raised into OpenSSL's error queue, so that
   `tls::error_text` and the golden files read as before.
-- **Limits:** a ClientHello of at most 4 + 16,384 bytes (BoringSSL's); at most
-  256 KiB fed and not yet read; at most 16,384 bytes of early data skipped; and, as
-  BoringSSL bounds them, 32 KeyUpdates in a row without data, 32 empty records in a
-  row, and 4 user_canceled alerts in a row. AES-GCM keys are updated before 2^24
-  records, as rustls's TLS suites limit them.
-- **Any number of change_cipher_spec records** in the window RFC 8446, section 5,
-  allows, each the single byte 1, as the RFC states it.
+- **Limits:** a ClientHello of at most 4 + 65,535 bytes (rustls's; BoringSSL's
+  16 KiB refused tlsfuzzer's large but valid ones); at most 256 KiB fed and not yet
+  read; at most 16,384 bytes of early data skipped; and, as BoringSSL bounds them,
+  32 KeyUpdates in a row without data, 32 empty records in a row, and 4 user_canceled
+  alerts in a row. AES-GCM keys are updated before 2^24 records, as rustls's TLS
+  suites limit them.
+- **One change_cipher_spec record** in the window RFC 8446, section 5, allows, the
+  single byte 1; a second is `unexpected_message`, as tlsfuzzer and OpenSSL take it.
+- **Tickets:** two after a full handshake and one after a resumption, each with a
+  7,200-second lifetime, a 2-byte nonce counting from 0, and no extensions. A ticket is
+  an envelope of 17 bytes in the clear (version, the key's 4-byte id, a 12-byte
+  AES-GCM nonce), which the AEAD authenticates, then sealed under AES-256-GCM: the
+  suite, the PSK, the issue time, age_add, and the SNI name; 92 bytes for a 32-byte
+  PSK and an 11-byte name. The server doesn't store tickets, so a ticket can resume
+  any number of times within its lifetime, as with libssl's stateless tickets; without
+  0-RTT, a replay gains nothing.
+- **The ticket keys' clock is monotonic and the process's own**, so tickets don't
+  outlive the process, as libssl's default keys didn't. A ticket's lifetime is checked
+  against the issue time it carries, sealed, and not the client's obfuscated age.
+- **libssl's server keeps the same key ring** (`ticket_key_issue` and
+  `ticket_key_open` in `shim/server.c`, through libssl's
+  `SSL_CTX_set_tlsext_ticket_key_evp_cb`), with libssl's own ticket format under
+  AES-256-CBC and HMAC-SHA256 from each key's two halves. Its tickets' lifetime is
+  still libssl's session timeout (7,200 s) on the wall clock.
+- **A ticket opens only under the context that ends up serving the connection**, the
+  one `choose_context` picked, in both builds; the plan's "a ticket from another
+  context must not bypass selection".
 - **No empty server_name in EncryptedExtensions:** RFC 6066 lets a server send one
   when it used the name; libssl without a servername callback doesn't either.
 
@@ -190,16 +228,32 @@ server differs.
   `tls/s2n_handshake_io.c`) because it has a dozen shapes; with one shape and an
   optional HelloRetryRequest, the five phases read more directly as code. Tickets add
   no phase: a resumed handshake skips Certificate and CertificateVerify in the flight.
-- Not yet compared: tickets and their key rotation (step 5), and the fuzz harness.
+- **Tickets: rustls's rotator** (`src/ticketer.rs`, rustls 0.23.46): two keys per
+  context, the newer issuing and both opening, turned lazily on use with no timer, and
+  a key that opens for twice its issuing period. The server differs in three ways: it
+  turns the ring only when it issues, and expires keys on either call; a key's age
+  comes from a monotonic clock, where rustls uses `UnixTime::now()`; and the period is
+  2 hours, libssl's ticket lifetime, where rustls's default `aws_lc_rs::Ticketer`
+  turns every 6 hours. The envelope is the server's own: AES-256-GCM, with the key id
+  and nonce as associated data, where rustls's aws-lc-rs ticketer and libssl use
+  RFC 5077's AES-256-CBC and HMAC-SHA256. Two tickets after a full handshake is the
+  default in rustls (`send_tls13_tickets`) and libssl; one after a resumption is
+  libssl's. s2n-tls instead takes keys from the application with explicit intro
+  times, which this server has no API for.
+- **Fuzzing: a server fed arbitrary bytes**, as BoringSSL's `fuzz/server.cc` and
+  rustls's `fuzz/fuzzers/server.rs` do (`fuzz_conn`), and beside it a target for the
+  ClientHello parser alone (`fuzz_hello`) and one for records under known keys
+  (`fuzz_open`), which reaches the record layer past the handshake that random bytes
+  can't complete. libFuzzer, each with a seed corpus.
 
 ## Branches and commits
 
 | Repository | Branch | What |
 |---|---|---|
 | goose-tls | `main` | Step 1's documentation (`cd5c42c`) |
-| goose-tls | `goose-server` | Spike 02 and the server |
+| goose-tls | `goose-server` | Spike 02 and the server, with `no-ktls` merged in: `95e72c5` the server, `1fe0f33` spike 02's harness and results, `e7704f9` tlsfuzzer's fixes, `fe7cb36` RFC 8448's HelloRetryRequest and the fuzz targets, `b7fe12b` the tlsfuzzer and sanitizer scripts, `d0e859a` session tickets in both servers, `9bc8238` the benchmark's resumption mode |
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
-| goose-http | `no-ktls` | kTLS's handoff removed |
+| goose-http | `no-ktls` | kTLS's handoff removed (`d328c93b`), from its `main` |
 
 ## Measurements
 
@@ -218,6 +272,47 @@ X25519's runs are in [spike 02](../../spikes/02-goose-server/README.md).
 | Server CPU, full handshake | 638.7 µs | 690.7 µs |
 | Server CPU, json-like request | 2.42 µs | 3.32 µs |
 
+With session tickets on in both servers, the same machine and setup, goose-tls
+`9bc8238`, 5 interleaved runs ([spike 02](../../spikes/02-goose-server/README.md#with-session-tickets)),
+X25519MLKEM768:
+
+| Per server connection | Goose server | OpenSSL |
+|---|---:|---:|
+| Idle, 4,000 held | 2,930 B | 28,528 B |
+| Handshake in flight, flight drained, 4,000 held | 3,807 B | 58,627 B |
+| Server CPU, full handshake, two tickets sent | 648.8 µs | 721.4 µs |
+| Server CPU, resumed handshake, one ticket sent | 150.5 µs | 207.0 µs |
+
+Tickets add no idle memory to the Goose server and 65 B to a handshake in flight; the
+full handshake costs 10 µs more with them, OpenSSL's 31 µs, from runs an hour apart.
+
 ## Questions for the maintainer
 
-None yet.
+None blocks the work. Two to confirm before the merge:
+
+- **Merge `goose-server` into `main`?** Steps 1 to 5 are done on it, with `no-ktls`
+  merged in; both builds pass `scripts/test.sh`, the sanitizers, and the fuzzers, on
+  Linux only. Options: merge now and test macOS and Windows after; or test them first
+  (macOS with Homebrew's OpenSSL 3 and 4). Recommendation: test first, since the Goose
+  server's C hasn't been compiled on either, and `shim/server.c` has a platform branch
+  (the ticket clock). Meanwhile: nothing merged; the branch is pushed.
+- **Test hooks in the shipped library.** `tlsg_ks_set` (RFC 8448's tests set a
+  secret) and `tlsg_ticket_clock` (the tests move the ticket clock) are exported by the
+  package's C, though only tests call them. Options: keep them, documented as for
+  tests; or compile them only under a test define, which the package's CMake would
+  need a way to set from a test build. Recommendation: keep them; neither reveals a
+  secret, and the clock only moves forward, which can only expire tickets sooner.
+  Meanwhile: kept, each with a comment saying it is for the tests. `tlsg_ks_set` can
+  overwrite a connection's secret, but only from code linked into the program, which
+  could do anything to the connection anyway.
+
+## Next
+
+- goose-http's client check (step 6): its suites over this branch, and curl, wrk,
+  h2load, oha, Chromium, and Firefox, with resumption recorded.
+- macOS: both builds' `scripts/test.sh`. Windows: the package's C built, and the
+  golden tests run, for each build.
+- A fuzz target that reaches resumption with a valid ticket, which random bytes can't
+  forge.
+- Step 7, once merged: json-tls and 8gbit over the network, a release, and goose-http's
+  pin.

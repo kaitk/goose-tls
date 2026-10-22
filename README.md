@@ -1,8 +1,9 @@
 # goose-tls
 
-TLS for [Goose](https://github.com/aardappel/goose): a Goose API over OpenSSL 3.0 or
-later, with opaque handles and a connection that takes bytes in and gives bytes out, so
-the program's event loop moves the bytes. Its first user is
+TLS for [Goose](https://github.com/aardappel/goose): a TLS 1.3 server written in Goose
+over OpenSSL's libcrypto, and a client over libssl, OpenSSL 3.0 or later, with opaque
+handles and a connection that takes bytes in and gives bytes out, so the program's
+event loop moves the bytes. Its first user is
 [goose-http](https://github.com/kaitk/goose-http), which serves HTTPS with it from its
 `http.tls` module.
 
@@ -20,7 +21,8 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 
 | | Feature | Notes |
 |---|---|---|
-| 🟢 | Server TLS 1.3 | A certificate chain and key from PEM, ALPN chosen by the server. Tested on macOS and Linux against OpenSSL 3.0, 3.6, and 4.0. |
+| 🟡 | Server TLS 1.3 | The Goose server: a certificate chain and an EC P-256 or RSA key from PEM, ALPN chosen by the server, X25519MLKEM768, X25519, P-256, and P-384. Tested on Linux with OpenSSL 3.5.5, against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer; not yet on macOS or other OpenSSL versions. libssl's server by build option, tested the same way (task 007). |
+| 🟡 | Session tickets | Stateless, two after a full handshake, with ticket keys turned every two hours; resumption with `psk_dhe_ke`. Tested as the server above. |
 | 🟢 | A context per connection | Chosen by the program at the ClientHello, from the SNI name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's challenge certificate for `acme-tls/1`. |
 | 🟢 | Certificates replaced while running | Accept new connections from a new context; open ones keep theirs. |
 | 🟢 | Client TLS 1.3 | Verifies the server's chain against OpenSSL's trust store, or given certificates, and its name. |
@@ -87,7 +89,7 @@ All of it is in `tls.goose`, in the `tls` namespace.
 | `pending(c) -> i64` | How many bytes wait for `drain` |
 | `shutdown(c) -> i64` | Queues close_notify for `drain`: 0, or `FAILED` |
 | `alpn(c)`, `version(c)`, `cipher(c)`, `group(c)` | The negotiated protocol, version, suite, and key exchange group; "" before the handshake |
-| `use_groups(ctx, names) -> bool` | Sets the key exchange groups, such as `"X25519:P-256:P-384"`, before the context's first connection; OpenSSL's default otherwise, X25519MLKEM768 first from 3.5 |
+| `use_groups(ctx, names) -> bool` | Sets the key exchange groups, such as `"X25519:P-256:P-384"`, before the context's first connection. Otherwise a server takes X25519MLKEM768 where libcrypto has it (3.5 or later), X25519, and P-256, and a client OpenSSL's default, X25519MLKEM768 first from 3.5 |
 | `peer_certificate(c)` | The peer's certificate as PEM; "" for none |
 | `error_text()` | Why the last call on this thread failed, in OpenSSL's words |
 | `library()` | The OpenSSL the program runs with |
@@ -123,12 +125,17 @@ obsolete protocol or weak cipher.
 
 ```text
 tls.goose            the package: namespace tls, the API over the shim
+server.goose         the TLS 1.3 server: handshake, key schedule, records, tickets
+hello.goose          the ClientHello's parser
+wire.goose           TLS's wire format: a checked reader, and writers
 tls.build            the sidecar: the shim is the CMake target goose_tls
-CMakeLists.txt       builds the shim
+CMakeLists.txt       builds the shim; GOOSE_TLS_SERVER=openssl picks libssl's server
 cmake/openssl.cmake  finds OpenSSL
-shim/tls.c           the C: OpenSSL's TLS API as handles, bytes, and status codes
+shim/server.c        the C under the Goose server: libcrypto's primitives, and memory
+shim/tls.c           the C: libssl's API as handles, bytes, and status codes
 shim/crypto.c        keys, signatures, and certificates for ACME
-shim/tls.h           what the two share
+shim/tls.h           what the three share
+fuzz/                libFuzzer targets for the server
 test/                the tests by area, each a program with a golden file in
                      test/expected/, and check.goose, what they share
 test/certs/          a self-signed RSA-2048 pair for the tests, valid until 2125, and a
@@ -138,6 +145,7 @@ test/hellos/         ClientHellos recorded from openssl s_client 4.0.3, offering
 test/tools/          the scripts' programs: a server and a client with sockets of their
                      own (net.c), and crypto_files, which writes keys and certificates
 scripts/             goose.sh, and the test scripts
+spikes/              the measurements behind the server's design
 docs/                architecture, decisions, development setup, Goose findings
 tasks/               task tracking (tasks/README.md)
 ```

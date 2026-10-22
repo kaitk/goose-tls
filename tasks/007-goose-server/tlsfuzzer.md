@@ -26,16 +26,24 @@ within the plan's scope.
 | version-negotiation | 8 | 194 | Fallbacks to TLS 1.2; the server is TLS 1.3 only |
 | zero-content-type, zero-length-data, record-padding | 23 | 0 | |
 | record-layer-limits | 68 | 0 | |
-| connection-abort | 140 | 10 | "After NewSessionTicket": no tickets yet (step 5) |
+| connection-abort | 140 | 10 | "After NewSessionTicket": no tickets at `fe7cb36`; all 150 pass with tickets (below) |
 | no-unknown-groups, with `--groups=0x001d,0x0017,0x0018` | 258 | 1 | tlsfuzzer without ML-KEM counts X25519MLKEM768 (0x11ec) as unknown; the server supports it |
 | obsolete-curves, with `--relaxed` | 87 | 84 | The server refuses a key share for an obsolete group with `illegal_parameter`, as the strict mode expects, but treats an obsolete group listed only in supported_groups as unknown, as the relaxed mode does; no tlsfuzzer mode is that mix. And X448, not offered |
 | ecdhe-curves | 21 | 12 | X448 and P-521, not offered; P-384's probes, invalid points included, pass |
 | serverhello-random, `-n 40` | 128 | 128 | FFDHE, X448, and P-521, not offered |
 | lengths, `-n 300`, the echo server | 302 | 0 | |
 
+With session tickets, at `d0e859a`, the same day and setup:
+
+| Script | Pass | Fail | Why the failures are expected |
+|---|---:|---:|---|
+| session-resumption | 4 | 3 | Two probes of TLS 1.2 tickets; and a resumption offering only `psk_ke`, which the plan leaves out (PSK with (EC)DHE only), so the server answers with a full handshake |
+| count-tickets, `-t 2` | 3 | 0 | |
+| connection-abort | 150 | 0 | |
+| psk_dhe_ke, psk_ke | 0 | 6 | External PSKs, configured out of band, which the server doesn't take. Unable to use the PSK, it needs signature_algorithms to authenticate, which these ClientHellos omit, so it sends `missing_extension` (RFC 8446, section 9.2) |
+
 Not run: non-support (servers without TLS 1.3), post-handshake-auth,
 certificate-request, certificate-compression and client-certificate-compression,
-psk_ke, psk_dhe_ke, session-resumption, and count-tickets (tickets are step 5),
 ffdhe-*, eddsa, mldsa, ecdsa-* (an ECDSA certificate run is still to do), minerva,
 mlkem (needs kyber-py), and keyupdate-from-server (needs the server to start one).
 

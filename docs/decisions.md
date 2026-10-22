@@ -164,7 +164,9 @@ with its reason and the trade-off that matters.
 
 The decisions above stay in force until these land.
 
-- **A TLS 1.3 server in Goose over libcrypto (2026-10-22; agreed, pending spike 02).**
+- **A TLS 1.3 server in Goose over libcrypto (2026-10-22; agreed, pending spike 02;
+  spike 02 passed 2026-10-22, and the server is on the branch `goose-server`, not yet
+  merged).**
   goose-tls's server connections move from libssl to a TLS 1.3 server whose protocol
   and record layer are written in this package, Goose by default, over libcrypto's EVP
   for every cryptographic primitive: AEAD, hashes, HMAC and HKDF, key exchange,
@@ -190,8 +192,12 @@ The decisions above stay in force until these land.
     `rsa_pss_rsae_sha256`. Left out: TLS 1.2, accepting early data, client
     certificates, PSK-only resumption, and kTLS.
   - Session tickets, stateless, with a current and a previous ticket key per context
-    and a bounded key lifetime (proposed: a new issuing key every 7,200 seconds), follow
-    the full server immediately, in both backends.
+    and a bounded key lifetime, follow the full server immediately, in both backends.
+    As built: a new issuing key every 7,200 seconds of a monotonic clock, each opening
+    tickets for 14,400 seconds and issuing at most 2^30, keys that live and die with
+    the process, and a 7,200-second ticket lifetime. The trade-off: a restart, or a
+    second server process, makes every client's ticket a full handshake; sharing keys
+    across processes waits for a caller that needs it (task 007).
   - It replaces "Bindings, not TLS in Goose" for the server's connections; "The context
     is chosen in Goose, at a paused handshake" keeps its API, with the package's own
     ClientHello parser in place of OpenSSL's callback; and "Key exchange" keeps

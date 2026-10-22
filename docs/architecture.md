@@ -3,36 +3,55 @@
 How goose-tls works, for programs that use it. Why it works this way is in
 [decisions](decisions.md).
 
-This page describes the package over OpenSSL's libssl. Pending: a TLS 1.3 server
-written in Goose over libcrypto replaces libssl for server connections, with the same
-API, once spike 02 passes, and a client offering ALPN without a protocol the server
-speaks will fail with `no_application_protocol` (task 007). Until these land,
-everything here holds. kTLS is retired ([decisions](decisions.md)): every connection's
-record layer runs in user space.
+This page describes the package on the branch `goose-server` (task 007): server
+connections run a TLS 1.3 server written in this package, in Goose over libcrypto, and
+client connections run OpenSSL's libssl. A package built with `GOOSE_TLS_SERVER=openssl`
+serves with libssl instead, through the same API ([development](development.md)).
+kTLS is retired ([decisions](decisions.md)): every connection's record layer runs in
+user space.
 
 ## The parts
 
 - `tls.goose`, the `tls` namespace: the API. It builds the ALPN list's wire format,
-  reads PEM files, and turns the shim's results into Goose values.
-- `shim/tls.c`: OpenSSL's API as handles, bytes, and status codes, and nothing else. It
-  never touches a socket, and keeps no pointer into Goose memory after a call returns.
+  reads PEM files, turns the shims' results into Goose values, and sends each call to
+  the server or library that owns the handle.
+- `server.goose`, `hello.goose`, and `wire.goose`: the server's protocol. They parse
+  the ClientHello, negotiate, run the handshake's state machine and key schedule,
+  frame and check records, and issue and accept session tickets. Every protocol
+  decision is here.
+- `shim/server.c`: what the Goose server needs from C. It owns the memory that outlives
+  a call, such as contexts, connections, and their byte queues, and calls libcrypto for
+  each primitive: AEAD, hashes, HKDF, key exchange, signatures, and random bytes.
+  Secrets stay in C, in slots the Goose code names, and are cleansed when replaced or
+  freed.
+- `shim/tls.c`: libssl's API as handles, bytes, and status codes, for clients and for
+  the libssl server.
 - `shim/crypto.c`: the keys, signatures, and certificates an ACME client needs.
-- OpenSSL, 3.0 or later: the handshake, the record layer, the ciphers, X.509, and
-  ECDSA.
+- OpenSSL, 3.0 or later: libcrypto's primitives, PEM, and X.509 for the server, and
+  libssl for clients. X25519MLKEM768 needs 3.5 or later.
+
+No shim touches a socket, and none keeps a pointer into Goose memory after a call
+returns.
 
 ## Contexts and connections
 
-A `tls::Context` is a server's or a client's configuration: OpenSSL's `SSL_CTX`, with
-TLS 1.3 only and its three suites, the key exchange groups (OpenSSL's default, or
-those `tls::use_groups` sets), and the ALPN protocols. A server's holds its
-certificate chain and key, and chooses the suite in its own order; `tls::server` makes
-one from PEM text, and `tls::server_files` from PEM files. A client's holds the
+A `tls::Context` is a server's or a client's configuration: TLS 1.3 only with its three
+suites, the key exchange groups, and the ALPN protocols. A server's holds its
+certificate chain and key, chooses the suite in its own order, and keeps its session
+tickets' keys ([Session tickets](#session-tickets)). `tls::server` makes one from PEM
+text, and `tls::server_files` from PEM files. The Goose server takes an EC P-256 key,
+signing with `ecdsa_secp256r1_sha256`, or an RSA key of 2048 bits or more, signing
+with `rsa_pss_rsae_sha256`, and refuses any other. Its default groups are
+X25519MLKEM768 where libcrypto has ML-KEM, X25519, and P-256; `tls::use_groups` sets
+others, P-384 among them. A client's context is libssl's `SSL_CTX`, holding the
 certificates it trusts ([Client TLS](#client-tls)).
 
-A `tls::Conn` is one connection's state: an `SSL` between two memory BIOs, one for the
-bytes received and one for the bytes to send. `tls::accept(ctx)` makes a server
-connection per accepted socket, and `tls::connect(ctx, host)` a client one per
-connected socket.
+A `tls::Conn` is one connection's state. A server connection holds three byte queues
+(bytes received, plaintext not yet read, and bytes to send), each direction's record
+keys, and during the handshake its transcript and secrets: about 2.9 KB once idle
+(task 007). A client connection is an `SSL` between two memory BIOs.
+`tls::accept(ctx)` makes a server connection per accepted socket, and
+`tls::connect(ctx, host)` a client one per connected socket.
 
 Both are flat structs holding a handle, the object's address, so they cross queues and
 `thread_spawn`. A context serves connections on any number of threads at once; a
@@ -54,8 +73,8 @@ The program owns the socket and its event loop: epoll, io_uring, kqueue, or IOCP
 A connection only transforms bytes:
 
 ```
-socket ──recv──▶ tls::feed ──▶ [received BIO] ──▶ OpenSSL ──▶ tls::read ──▶ plaintext
-socket ◀──send── tls::drain ◀── [to-send BIO] ◀── OpenSSL ◀── tls::write ◀── plaintext
+socket ──recv──▶ tls::feed ──▶ [received] ──▶ TLS ──▶ tls::read ──▶ plaintext
+socket ◀──send── tls::drain ◀── [to send] ◀── TLS ◀── tls::write ◀── plaintext
 ```
 
 For each chunk the socket gives:
@@ -75,21 +94,49 @@ For each chunk the socket gives:
 
 To close, `tls::shutdown(c)` queues close_notify, which the program drains and sends
 before closing the socket. After `tls::FAILED`, drain too, since an alert may be waiting,
-then close; `tls::error_text()` says what failed, in OpenSSL's words.
+then close; `tls::error_text()` says what failed, in OpenSSL's words: the Goose server
+raises libssl's reasons, so both servers' failures read alike.
 
-The to-send BIO grows as the program writes, so the program sets its own limits: it
+The bytes to send grow as the program writes, so the program sets its own limits: it
 drains as fast as the socket takes the bytes, and stops reading requests while the
-socket is backed up. Each BIO frees its buffer once it's emptied, as OpenSSL does its
-record buffers, so between records a connection holds only OpenSSL's state
-([decisions](decisions.md)).
+socket is backed up. Each queue frees its buffer once it's emptied, so between records
+a connection holds only its keys and protocol state ([decisions](decisions.md)). The
+Goose server takes at most 256 KiB fed and not yet read; `tls::feed` refuses more.
 
 ## ALPN
 
 The context holds the server's protocols in its order of preference. When a client
-offers some, the server picks the first of its own that the client offered; when none
-match, or the client offers no ALPN, the server answers without ALPN, and never with a
-protocol the client didn't offer. `tls::alpn(c)` gives the choice after the handshake,
-or "" for none.
+offers some, the server picks the first of its own that the client offered. When none
+match, the handshake fails with `no_application_protocol`, as RFC 7301, section 3.2,
+requires; a client that offers no ALPN connects without it. The server never answers
+with a protocol the client didn't offer. `tls::alpn(c)` gives the choice after the
+handshake, or "" for none.
+
+## Session tickets
+
+A server sends session tickets after the handshake: two after a full handshake and
+one after a resumption, each valid for 7,200 seconds. A client that offers one back
+with `psk_dhe_ke` resumes: the handshake skips the certificate and its signature, and
+still runs a fresh key exchange. A ticket that doesn't open, or has expired, gets a
+full handshake. Tickets carry no early data. The program drains them like any other
+output; nothing else changes for it.
+
+Tickets are stateless: the server stores nothing per ticket, and a ticket is the
+resumption secret sealed under one of the context's ticket keys, with the suite, its
+issue time, and the SNI name. A context keeps two keys. The current one issues tickets
+for 7,200 seconds, then the next ticket issued makes a new key current, and the old
+one opens tickets until 14,400 seconds after it was made. There is no timer: a new key
+is made when a ticket is issued, and an expired key is dropped when a ticket is issued
+or opened, or the context is freed, its bytes cleansed. They count time on a monotonic clock, so a change of the system's clock moves
+no ticket's lifetime.
+
+The keys live in the process: a restarted server, or a second process, can't open
+another's tickets, and their clients get a full handshake. Shares of a context
+(`tls::share`) share its keys, so every worker opens every worker's tickets. A ticket
+opens only under the context that serves the connection: after `tls::use_context`,
+that is the context moved to. The libssl server follows the same key lifetimes,
+through libssl's ticket-key callback, in libssl's own ticket format; its tickets'
+7,200 seconds count on the system's clock.
 
 ## A context per connection
 
