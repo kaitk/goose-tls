@@ -84,7 +84,10 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 - [x] State-machine fuzzing: `fuzz/` (`fe7cb36`), libFuzzer with ASan and UBSan.
       Ten minutes each on 2026-10-22 (5800X3D, WSL2), no findings: `fuzz_hello`
       136,148,160 runs, `fuzz_conn` 2,919,257 runs, `fuzz_open` 1,375,642 runs, built
-      before the tickets' commit (`d0e859a`). A run with tickets is still to do
+      before the tickets' commit (`d0e859a`). Then five minutes each with tickets,
+      built at `9bc8238`, no findings: 66,871,105, 2,338,773, and 523,700 runs.
+      Random bytes reach the PSK extension's parsing and a failed ticket opening, not
+      a resumption, which needs a ticket the server sealed
 - [x] Sanitizers on the shim and the generated C, debug and optimized builds:
       `scripts/test-sanitizers.sh` (`b7fe12b`), all ten tests clean in both
 
@@ -251,7 +254,7 @@ server differs.
 | Repository | Branch | What |
 |---|---|---|
 | goose-tls | `main` | Step 1's documentation (`cd5c42c`) |
-| goose-tls | `goose-server` | Spike 02 and the server, with `no-ktls` merged in: `95e72c5` the server, `1fe0f33` spike 02's harness and results, `e7704f9` tlsfuzzer's fixes, `fe7cb36` RFC 8448's HelloRetryRequest and the fuzz targets, `b7fe12b` the tlsfuzzer and sanitizer scripts, `d0e859a` session tickets in both servers, `9bc8238` the benchmark's resumption mode |
+| goose-tls | `goose-server` | Spike 02 and the server, with `no-ktls` merged in: `95e72c5` the server, `1fe0f33` spike 02's harness and results, `e7704f9` tlsfuzzer's fixes, `fe7cb36` RFC 8448's HelloRetryRequest and the fuzz targets, `b7fe12b` the tlsfuzzer and sanitizer scripts, `d0e859a` session tickets in both servers, `9bc8238` the benchmark's resumption mode, `c87d3ac` and `3792a59` a test hook and a test, `ba1ae99` the docs and tickets' measurements |
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
 | goose-http | `no-ktls` | kTLS's handoff removed (`d328c93b`), from its `main` |
 
