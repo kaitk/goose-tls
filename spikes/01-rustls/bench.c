@@ -27,7 +27,11 @@
                     out, the time in server calls
 
    Times count only the server's calls, each between two CLOCK_MONOTONIC
-   reads; the clients' work is left out. */
+   reads; the clients' work is left out. With ALLOCS=1 in the environment,
+   hs, resume, and json also count the allocations OpenSSL's allocator makes
+   inside the server's calls, per handshake or request, which covers the
+   Goose server's shim and libcrypto but not rustls's own; counting slows
+   the calls, so take times from runs without it. */
 #define _GNU_SOURCE
 #include <malloc.h>
 #include <stdio.h>
@@ -41,13 +45,25 @@
 #include "srv.h"
 
 static uint64_t t_srv;
+/* Inside a server call, and with ALLOCS=1 the allocations made there. */
+static int in_srv, counting;
+static long n_alloc, n_realloc, n_free;
 static uint64_t now(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
     return (uint64_t)t.tv_sec * 1000000000u + (uint64_t)t.tv_nsec;
 }
-#define S(expr) __extension__({ uint64_t t0_ = now(); __auto_type r_ = (expr); t_srv += now() - t0_; r_; })
-#define SV(expr) do { uint64_t t0_ = now(); expr; t_srv += now() - t0_; } while (0)
+#define S(expr) __extension__({ uint64_t t0_ = now(); in_srv = 1; __auto_type r_ = (expr); in_srv = 0; t_srv += now() - t0_; r_; })
+#define SV(expr) do { uint64_t t0_ = now(); in_srv = 1; expr; in_srv = 0; t_srv += now() - t0_; } while (0)
+
+static void reset(void) { t_srv = 0, n_alloc = n_realloc = n_free = 0; }
+
+/* With ALLOCS=1: the allocations per op. */
+static void print_allocs(long ops) {
+    if (counting)
+        printf(" server_allocs_per_op=%.2f server_reallocs_per_op=%.2f server_frees_per_op=%.2f",
+               (double)n_alloc / ops, (double)n_realloc / ops, (double)n_free / ops);
+}
 
 static void die(const char *what) {
     fprintf(stderr, "bench: %s\n", what);
@@ -63,6 +79,7 @@ static void *track_malloc(size_t n, const char *file, int line) {
     size_t *p = malloc(n + 16);
     if (!p) return NULL;
     *p = n;
+    n_alloc += in_srv;
     mem_now += n;
     if (mem_now > mem_peak) mem_peak = mem_now;
     return (char *)p + 16;
@@ -73,6 +90,7 @@ static void *track_realloc(void *q, size_t n, const char *file, int line) {
     p = realloc(p, n + 16);
     if (!p) return NULL;
     *p = n;
+    n_realloc += in_srv;
     mem_now = mem_now - old + n;
     if (mem_now > mem_peak) mem_peak = mem_now;
     return (char *)p + 16;
@@ -81,6 +99,7 @@ static void track_free(void *q, const char *file, int line) {
     (void)file, (void)line;
     if (!q) return;
     size_t *p = (size_t *)((char *)q - 16);
+    n_free += in_srv;
     mem_now -= *p;
     free(p);
 }
@@ -200,7 +219,8 @@ static void *server_new(void) {
 int main(int argc, char **argv) {
     if (argc < 4) die("usage: bench PROVIDER GROUPS MODE [ARGS]");
     const char *provider = argv[1], *groups = argv[2], *mode = argv[3];
-    if (strcmp(mode, "peak") == 0 && !CRYPTO_set_mem_functions(track_malloc, track_realloc, track_free))
+    counting = getenv("ALLOCS") && strcmp(getenv("ALLOCS"), "1") == 0;
+    if ((strcmp(mode, "peak") == 0 || counting) && !CRYPTO_set_mem_functions(track_malloc, track_realloc, track_free))
         die("OpenSSL allocated before its allocator could be counted");
     long a = argc > 4 ? atol(argv[4]) : 1000, b = argc > 5 ? atol(argv[5]) : 1;
     const char *dir = getenv("CERTS") ? getenv("CERTS") : ".";
@@ -234,7 +254,7 @@ int main(int argc, char **argv) {
     SSL_set_shutdown(c0, SSL_SENT_SHUTDOWN);
     SSL_free(c0);
     srv_free(s0);
-    t_srv = 0;
+    reset();
 
     if (strcmp(mode, "idle") == 0 || strcmp(mode, "inflight") == 0 || strcmp(mode, "queued") == 0 ||
         strcmp(mode, "empty") == 0) {
@@ -321,8 +341,10 @@ int main(int argc, char **argv) {
             SSL_free(c);
         }
         double wall = (double)(now() - w0) / 1e9, srv = (double)t_srv / 1e9;
-        printf(" n=%ld group=%s server_us_per_hs=%.1f server_hs_per_s=%.0f wall_hs_per_s=%.0f\n", a, g,
+        printf(" n=%ld group=%s server_us_per_hs=%.1f server_hs_per_s=%.0f wall_hs_per_s=%.0f", a, g,
                srv * 1e6 / a, a / srv, a / wall);
+        print_allocs(a);
+        printf("\n");
         return 0;
     }
     if (strcmp(mode, "resume") == 0) {
@@ -341,8 +363,10 @@ int main(int argc, char **argv) {
             SSL_free(c);
         }
         double wall = (double)(now() - w0) / 1e9, srv = (double)t_srv / 1e9;
-        printf(" n=%ld group=%s server_us_per_hs=%.1f server_hs_per_s=%.0f wall_hs_per_s=%.0f\n", a, g,
+        printf(" n=%ld group=%s server_us_per_hs=%.1f server_hs_per_s=%.0f wall_hs_per_s=%.0f", a, g,
                srv * 1e6 / a, a / srv, a / wall);
+        print_allocs(a);
+        printf("\n");
         return 0;
     }
     if (strcmp(mode, "enc") == 0 || strcmp(mode, "dec") == 0) {
@@ -352,7 +376,7 @@ int main(int argc, char **argv) {
         static uint8_t rec[16384];
         memset(rec, 'b', sizeof rec);
         long recs = a * 64;
-        t_srv = 0;
+        reset();
         for (long i = 0; i < recs; i++) {
             if (mode[0] == 'e') {
                 if (S(srv_write(s, rec, sizeof rec)) != (int64_t)sizeof rec) die("server write");
@@ -379,10 +403,12 @@ int main(int argc, char **argv) {
             c[k] = client_new();
             handshake(s[k], c[k]);
         }
-        t_srv = 0;
+        reset();
         for (long i = 0; i < a; i++) exchange(s[i % b], c[i % b], 0);
         double srv = (double)t_srv / 1e9;
-        printf(" n=%ld conns=%ld server_us_per_req=%.2f server_req_per_s=%.0f\n", a, b, srv * 1e6 / a, a / srv);
+        printf(" n=%ld conns=%ld server_us_per_req=%.2f server_req_per_s=%.0f", a, b, srv * 1e6 / a, a / srv);
+        print_allocs(a);
+        printf("\n");
         return 0;
     }
     die("unknown mode");
