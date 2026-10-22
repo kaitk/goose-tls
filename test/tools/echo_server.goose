@@ -15,6 +15,9 @@
 // acmeIdentifier is check::DIGEST, the SHA-256 of "token.thumbprint", and ALPN
 // acme-tls/1; one that sends other.test gets a self-signed certificate for
 // other.test; every other gets CERT. It prints each choice.
+//
+// TLS_GROUPS, in the environment, sets the context's groups (tls::use_groups),
+// for tlsfuzzer's probes of a group that isn't a default.
 import std;
 import os;
 import tls from "../../";
@@ -185,6 +188,11 @@ fn main() {
     let ctx, ok = tls::server_files(crt, key, ["http/1.1"]);
     guard ok else {
         print("no context: ", tls::error_text());
+        exit(1);
+    }
+    var groups: u8[>..] = [];
+    if env("TLS_GROUPS", groups) && !tls::use_groups(ctx, groups) {
+        print("TLS_GROUPS: ", tls::error_text());
         exit(1);
     }
     if opt == "choose" {

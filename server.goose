@@ -86,10 +86,11 @@ let SKIP_UNDECRYPTABLE = 1;
 let SKIP_ENCRYPTED = 2;
 let SKIP_MAX = 16384;
 
-// The largest ClientHello taken, its header and BoringSSL's limit for a
-// handshake message's body; and bytes fed and not yet read, which bounds what
-// a peer can make a connection hold.
-let MAX_HELLO = 4 + 16384;
+// The largest ClientHello taken, its header and rustls's limit for a
+// handshake message's body (MAX_HANDSHAKE_SIZE): tlsfuzzer's ClientHellos of
+// thousands of extensions pass 16 KiB; and bytes fed and not yet read, which
+// bounds what a peer can make a connection hold.
+let MAX_HELLO = 4 + 0xffff;
 let MAX_FED = 1 << 18;
 
 // Record content types.
@@ -165,6 +166,7 @@ struct ServerState {
     // The pause is over, or the context doesn't choose.
     chosen: bool,
     ccs_sent: bool,
+    ccs_seen: bool,
     // The server's records are encrypted from here on.
     sealing: bool,
     skip: i64,
@@ -306,12 +308,13 @@ fn front_record(id: i64, st: ServerState&, kind: i64, len: i64) -> i64 {
 }
 
 // An unencrypted change_cipher_spec or alert record, whole in the bytes fed.
-// A change_cipher_spec is the single byte 1, between the first ClientHello
-// and the client's Finished (section 5).
+// A change_cipher_spec is the single byte 1, once, between the first
+// ClientHello and the client's Finished (section 5; a second fails, as
+// tlsfuzzer expects).
 fn plain_record(id: i64, st: ServerState&, kind: i64, len: i64) -> i64 {
     var body: u8[2] = [0; 2];
     if kind == CT_CCS {
-        guard st.phase == PH_RETRY || st.phase == PH_FINISHED else {
+        guard (st.phase == PH_RETRY || st.phase == PH_FINISHED) && !st.ccs_seen else {
             return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, "change_cipher_spec");
         }
         g_in_peek(id, 5, body[..1]);
@@ -319,8 +322,10 @@ fn plain_record(id: i64, st: ServerState&, kind: i64, len: i64) -> i64 {
             return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_BAD_CHANGE_CIPHER_SPEC, "");
         }
         g_in_skip(id, 6);
+        st.ccs_seen = true;
         return AGAIN;
     }
+    guard len > 0 else { return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_BAD_LENGTH, "an empty alert record"); }
     guard len == 2 else { return fail(id, st, ALERT_DECODE_ERROR, R_BAD_LENGTH, "an alert"); }
     g_in_peek(id, 5, body);
     g_in_skip(id, 7);
@@ -403,7 +408,9 @@ struct Choice { suite: i64, group: i64, retry: bool, alpn: i64 }
 // else the first the client supports, which needs a HelloRetryRequest.
 fn negotiate(id: i64, h: Hello&, c: Choice&) -> Refusal {
     let ctx = g_conn_ctx(id);
-    guard h.has_versions && has16(h.versions, TLS13) else {
+    // legacy_version is 0x0303 in a TLS 1.3 ClientHello (section 4.1.2);
+    // below it, the client is broken, as tlsfuzzer and OpenSSL take it.
+    guard h.has_versions && has16(h.versions, TLS13) && h.legacy_version >= 0x0303 else {
         return refuse(ALERT_PROTOCOL_VERSION, R_UNSUPPORTED_PROTOCOL, "");
     }
     guard h.compression.len == 1 && h.compression[0] == 0 else {
@@ -817,6 +824,7 @@ fn record_step(id: i64, st: ServerState&) -> i64 {
         return AGAIN;
     }
     if inner == CT_ALERT {
+        guard n > 0 else { return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_BAD_LENGTH, "an empty alert record"); }
         guard n == 2 else { return fail(id, st, ALERT_DECODE_ERROR, R_BAD_LENGTH, "an alert"); }
         var a: u8[2] = [0; 2];
         g_plain_pop(id, 2, a);
@@ -824,24 +832,35 @@ fn record_step(id: i64, st: ServerState&) -> i64 {
     }
     guard inner == CT_HANDSHAKE else { return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_RECORD, ""); }
     guard n > 0 else { return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_BAD_LENGTH, "an empty handshake record"); }
-    guard st.hs.len + n <= 64 else {
-        return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "a handshake message the server doesn't take");
+    var got: u8[>..] = [];
+    got.resize(n, 0);
+    g_plain_pop(id, n, got);
+    // The messages the server takes here are at most 52 bytes; a longer one
+    // is still judged by its header, as handshake_messages would.
+    if st.hs.len + n > st.hs.cap {
+        var head: u8[4] = [0; 4];
+        for i in 4 { head[i] = if i < st.hs.len { st.hs[i] } else { got[i - st.hs.len] }; }
+        let kind = head[0] as i64;
+        return fail(id, st, if kind == expected(st) { ALERT_DECODE_ERROR } else { ALERT_UNEXPECTED_MESSAGE },
+                    R_BAD_LENGTH, "a handshake message longer than the server takes");
     }
-    var got: u8[64] = [0; 64];
-    g_plain_pop(id, n, got[..n]);
-    for b in got[..n] { st.hs.push(b); }
+    for b in got { st.hs.push(b); }
     return handshake_messages(id, st);
 }
 
-// The encrypted handshake messages the client sends: Finished, then only
-// KeyUpdate. Each changes keys, so it must end its record.
+// The handshake message the client may send now: its Finished, or after it,
+// only a KeyUpdate.
+fn expected(st: ServerState&) -> i64 { if st.phase == PH_FINISHED { HS_FINISHED } else { HS_KEY_UPDATE } }
+
+// The encrypted handshake messages the client sends. Each changes keys, so it
+// must end its record.
 fn handshake_messages(id: i64, st: ServerState&) -> i64 {
     guard st.hs.len >= 4 else { return AGAIN; }
     let kind = st.hs[0] as i64;
     let len = (st.hs[1] as i64) << 16 | (st.hs[2] as i64) << 8 | st.hs[3];
-    let want = if st.phase == PH_FINISHED { HS_FINISHED } else { HS_KEY_UPDATE };
-    guard kind == want && len <= 48 else {
-        return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "");
+    guard kind == expected(st) else { return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, ""); }
+    guard len == (if kind == HS_FINISHED { hash_len(st.suite) } else { 1 }) else {
+        return fail(id, st, ALERT_DECODE_ERROR, R_BAD_LENGTH, if kind == HS_FINISHED { "Finished" } else { "KeyUpdate" });
     }
     guard st.hs.len >= 4 + len else { return AGAIN; }
     guard st.hs.len == 4 + len else {
@@ -851,7 +870,7 @@ fn handshake_messages(id: i64, st: ServerState&) -> i64 {
     for i in len { body[i] = st.hs[4 + i]; }
     st.hs.clear();
     if kind == HS_FINISHED {
-        guard len == hash_len(st.suite) && g_check(id, S_CLIENT_FINISHED, body[..len]) else {
+        guard g_check(id, S_CLIENT_FINISHED, body[..len]) else {
             return fail(id, st, ALERT_DECRYPT_ERROR, R_DIGEST_CHECK_FAILED, "the client's Finished");
         }
         guard g_rec_keys(id, DIR_READ, S_CLIENT_AP) else {
@@ -861,7 +880,6 @@ fn handshake_messages(id: i64, st: ServerState&) -> i64 {
         st.phase = PH_OPEN;
         return AGAIN;
     }
-    guard len == 1 else { return fail(id, st, ALERT_DECODE_ERROR, R_BAD_LENGTH, "KeyUpdate"); }
     guard body[0] <= 1 else { return fail(id, st, ALERT_ILLEGAL_PARAMETER, R_BAD_KEY_UPDATE, ""); }
     st.updates += 1;
     guard st.updates <= MAX_UPDATES else {

@@ -39,6 +39,7 @@ let ALERT_NO_APPLICATION_PROTOCOL = 120;
 // the length its vector already took off.
 struct Hello {
     raw: const u8[:],
+    legacy_version: i64,
     random: const u8[:],
     session_id: const u8[:],
     suites: const u8[:],
@@ -121,7 +122,8 @@ fn refuse(alert: i64, reason: i64, text: const u8[:]) -> Refusal {
 fn parse_hello(msg: const u8[:], h: Hello&) -> Refusal {
     h.raw = msg;
     var r = reader(msg);
-    take(msg, r, 6);
+    take(msg, r, 4);
+    h.legacy_version = get16(msg, r);
     h.random = take(msg, r, 32);
     h.session_id = vec8(msg, r);
     h.suites = vec16(msg, r);
@@ -282,8 +284,10 @@ fn share_for(list: const u8[:], group: i64) -> const u8[:], bool {
     return list[..0], false;
 }
 
-// Whether a key_share list names a group twice, or one supported_groups
-// doesn't (section 4.2.8).
+// Whether a key_share list names no group twice, none that supported_groups
+// doesn't (section 4.2.8), and none that is obsolete in TLS 1.3 (section
+// 4.2.7: the elliptic curves before TLS 1.3 and the explicit-curve codes),
+// which OpenSSL refuses too.
 fn shares_consistent(list: const u8[:], groups: const u8[:]) -> bool {
     var offered: u64[1024] = [0; 1024];
     var i = 0;
@@ -298,8 +302,13 @@ fn shares_consistent(list: const u8[:], groups: const u8[:]) -> bool {
         let g = get16(list, r);
         vec16(list, r);
         let bit: u64 = 1 << (g & 63);
-        guard (offered[g >> 6] & bit) != 0 && (seen[g >> 6] & bit) == 0 else { return false; }
+        guard (offered[g >> 6] & bit) != 0 && (seen[g >> 6] & bit) == 0 && !obsolete(g) else { return false; }
         seen[g >> 6] |= bit;
     }
     return true;
+}
+
+fn obsolete(group: i64) -> bool {
+    (group >= 0x0001 && group <= 0x0016) || (group >= 0x001a && group <= 0x001c) ||
+    group == 0xff01 || group == 0xff02
 }
