@@ -72,8 +72,9 @@ static int indexes(void) {
 }
 
 /* Picks the first of the server's protocols that the client offered. When
-   none matches, it selects nothing (SSL_TLSEXT_ERR_NOACK) rather than the
-   fallback SSL_select_next_proto suggests, which is the client's first
+   none matches, the handshake fails with no_application_protocol
+   (SSL_TLSEXT_ERR_ALERT_FATAL), as RFC 7301, section 3.2, requires, rather
+   than taking the fallback SSL_select_next_proto suggests, the client's first
    protocol whether or not the server has it. */
 static int alpn_select(SSL *ssl, const unsigned char **out, unsigned char *outlen,
                        const unsigned char *in, unsigned int inlen, void *arg) {
@@ -83,7 +84,7 @@ static int alpn_select(SSL *ssl, const unsigned char **out, unsigned char *outle
     unsigned char *sel = NULL, sellen = 0;
     if (SSL_select_next_proto(&sel, &sellen, a->wire, (unsigned int)a->len, in, inlen) !=
         OPENSSL_NPN_NEGOTIATED)
-        return SSL_TLSEXT_ERR_NOACK;
+        return SSL_TLSEXT_ERR_ALERT_FATAL;
     *out = sel;
     *outlen = sellen;
     return SSL_TLSEXT_ERR_OK;

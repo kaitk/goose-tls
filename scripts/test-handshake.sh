@@ -1,7 +1,8 @@
 #!/bin/sh
 # Handshakes against the test server (test/tools/echo_server.goose), built with
 # goose build, from openssl s_client and curl: an echo, a refused TLS 1.2
-# client, ALPN, HTTP/1.1 requests, and HttpArena's TLS checks (its
+# client, ALPN (a client offering none of the server's protocols refused with
+# no_application_protocol), HTTP/1.1 requests, and HttpArena's TLS checks (its
 # scripts/validate.sh, tls_posture_probe and tls_quality_probe, at 2d85137):
 # the served certificate is the one given, TLS 1.3 with one of its three
 # suites, no ALPN protocol the client didn't offer, and no obsolete protocol
@@ -143,8 +144,14 @@ got=$(alpn http/1.1)
 [ "$got" = "ALPN protocol: http/1.1" ] && pass "http/1.1 offered: $got" || fail "http/1.1 offered: $got"
 got=$(alpn h2,http/1.1)
 [ "$got" = "ALPN protocol: http/1.1" ] && pass "h2,http/1.1 offered: $got" || fail "h2,http/1.1 offered: $got"
-got=$(alpn h2)
-[ "$got" = "No ALPN negotiated" ] && pass "h2 offered: $got" || fail "h2 offered: $got"
+# Whether a handshake with these s_client options is refused with
+# no_application_protocol, as RFC 7301, section 3.2, asks when the client's
+# ALPN offers none of the server's protocols.
+refused_alpn() {
+    s_client '' "$@" | grep -qi 'alert no application protocol'
+}
+refused_alpn -alpn h2 && pass "h2 offered: refused with no_application_protocol" ||
+    fail "h2 offered: not refused with no_application_protocol"
 got=$(s_client '' | grep -E '^(ALPN protocol|No ALPN)' | head -1)
 [ "$got" = "No ALPN negotiated" ] && pass "none offered: $got" || fail "none offered: $got"
 
@@ -224,7 +231,9 @@ check_served() {
 }
 check_served "localhost, No ALPN negotiated" -servername localhost
 check_served "localhost, http/1.1" -servername localhost -alpn http/1.1
-check_served "localhost, No ALPN negotiated" -servername localhost -alpn acme-tls/1
+refused_alpn -servername localhost -alpn acme-tls/1 &&
+    pass "-servername localhost -alpn acme-tls/1: refused with no_application_protocol" ||
+    fail "-servername localhost -alpn acme-tls/1: not refused with no_application_protocol"
 check_served "other.test, http/1.1" -servername other.test -alpn http/1.1
 check_served "localhost, http/1.1" -servername acme.test -alpn http/1.1
 check_served "acme.test, acme-tls/1" -servername acme.test -alpn acme-tls/1
