@@ -7,11 +7,11 @@
    - A context: the certificate chain as DER, the key, and the settings a
      handshake reads, shared by every connection and thread that holds a
      reference to it.
-   - A connection: three byte queues (bytes fed and not yet read, plaintext
-     not yet read, bytes waiting for drain), each freed once empty; the
-     record keys and sequence numbers of each direction; during the
-     handshake, its transcript and its secrets; and a copy of the Goose
-     server's state, which each call loads and stores.
+   - A connection: two byte queues (bytes fed and not yet read, among them
+     the record whose plaintext is being read, and bytes waiting for drain),
+     each freed once empty; the record keys and sequence numbers of each
+     direction; during the handshake, its transcript and its secrets; and a
+     copy of the Goose server's state, which each call loads and stores.
 
    Secrets never cross to Goose. A handshake's secrets sit in numbered slots
    that Goose names; a direction's traffic secret sits beside its keys for a
@@ -330,7 +330,11 @@ typedef struct {
 typedef struct {
     gctx *ctx;
     const suite_t *suite;
-    queue in, plain, out;
+    queue in, out;
+    /* A record decrypts in place, and stays at the front of in, held bytes
+       long, until its content, plain_len bytes from plain_off, is read; the
+       bytes fed that Goose sees start after it. */
+    uint16_t held, plain_off, plain_len;
     direction rd, wr;
     handshake *hs;
     char *sni;
@@ -415,9 +419,8 @@ void tlsg_conn_free(int64_t h) {
     gconn *c = CONN(h);
     if (!c) return;
     ctx_release(c->ctx);
+    if (c->in.p) OPENSSL_cleanse(c->in.p, c->in.cap);
     q_free(&c->in);
-    if (c->plain.p) OPENSSL_cleanse(c->plain.p, c->plain.cap);
-    q_free(&c->plain);
     q_free(&c->out);
     dir_clear(&c->rd);
     dir_clear(&c->wr);
@@ -464,20 +467,31 @@ int64_t tlsg_feed(int64_t h, tls_bytes data, int64_t max) {
     return data.len;
 }
 
-int64_t tlsg_in_len(int64_t h) { return (int64_t)CONN(h)->in.len; }
+int64_t tlsg_in_len(int64_t h) { return (int64_t)(CONN(h)->in.len - CONN(h)->held); }
 
 /* Copies up to out.len of the bytes fed, from offset at, into out. */
 int64_t tlsg_in_peek(int64_t h, int64_t at, tls_buf out) {
-    queue *q = &CONN(h)->in;
-    if (at < 0 || out.len <= 0 || (size_t)at >= q->len) return 0;
-    size_t n = q->len - (size_t)at;
+    gconn *c = CONN(h);
+    queue *q = &c->in;
+    if (at < 0 || out.len <= 0 || (size_t)at >= q->len - c->held) return 0;
+    size_t n = q->len - c->held - (size_t)at;
     if (n > (size_t)out.len) n = (size_t)out.len;
-    memcpy(out.data, q->p + q->off + at, n);
+    memcpy(out.data, q->p + q->off + c->held + at, n);
     return (int64_t)n;
 }
 
 void tlsg_in_skip(int64_t h, int64_t n) {
-    if (n > 0) q_drop(&CONN(h)->in, (size_t)n);
+    gconn *c = CONN(h);
+    queue *q = &c->in;
+    if (n <= 0) return;
+    if (!c->held) {
+        q_drop(q, (size_t)n);
+        return;
+    }
+    size_t after = q->len - c->held, k = (size_t)n < after ? (size_t)n : after;
+    uint8_t *p = q->p + q->off + c->held;
+    memmove(p, p + k, after - k);
+    q->len -= k;
 }
 
 int64_t tlsg_pending(int64_t h) { return CONN(h) ? (int64_t)CONN(h)->out.len : 0; }
@@ -497,34 +511,45 @@ uint8_t tlsg_out_put(int64_t h, tls_bytes data) {
     return data.len >= 0 && q_put(&CONN(h)->out, data.data, (size_t)data.len);
 }
 
-int64_t tlsg_plain_len(int64_t h) { return (int64_t)CONN(h)->plain.len; }
+int64_t tlsg_plain_len(int64_t h) { return CONN(h)->plain_len; }
+
+static uint8_t *plain_at(gconn *c) { return c->in.p + c->in.off + 5 + c->plain_off; }
+
+/* Drops the held record, its content read or discarded. */
+static void plain_done(gconn *c) {
+    q_drop(&c->in, c->held);
+    c->held = c->plain_off = c->plain_len = 0;
+}
 
 /* Moves up to buf.len bytes of plaintext from the front into buf. */
 int64_t tlsg_plain_read(int64_t h, tls_buf buf) {
-    queue *q = &CONN(h)->plain;
-    if (buf.len <= 0 || !q->len) return 0;
-    size_t n = q->len < (size_t)buf.len ? q->len : (size_t)buf.len;
-    memcpy(buf.data, q->p + q->off, n);
-    q_drop(q, n);
+    gconn *c = CONN(h);
+    if (buf.len <= 0 || !c->plain_len) return 0;
+    size_t n = c->plain_len < (size_t)buf.len ? c->plain_len : (size_t)buf.len;
+    memcpy(buf.data, plain_at(c), n);
+    c->plain_off += (uint16_t)n;
+    c->plain_len -= (uint16_t)n;
+    if (!c->plain_len) plain_done(c);
     return (int64_t)n;
 }
 
 /* Moves the last n bytes of plaintext, a record's content that isn't
    application data, into buf, which must hold them. */
 int64_t tlsg_plain_pop(int64_t h, int64_t n, tls_buf buf) {
-    queue *q = &CONN(h)->plain;
-    if (n < 0 || (size_t)n > q->len || n > buf.len) return -1;
-    memcpy(buf.data, q->p + q->off + q->len - (size_t)n, (size_t)n);
-    q->len -= (size_t)n;
-    if (!q->len) q_free(q);
+    gconn *c = CONN(h);
+    if (n < 0 || (size_t)n > c->plain_len || n > buf.len) return -1;
+    memcpy(buf.data, plain_at(c) + c->plain_len - (size_t)n, (size_t)n);
+    c->plain_len -= (uint16_t)n;
+    if (!c->plain_len) plain_done(c);
     return n;
 }
 
 /* Discards the plaintext not yet read, after a failure. */
 void tlsg_plain_clear(int64_t h) {
-    queue *q = &CONN(h)->plain;
-    if (q->p) OPENSSL_cleanse(q->p, q->cap);
-    q_free(q);
+    gconn *c = CONN(h);
+    if (!c->held) return;
+    OPENSSL_cleanse(c->in.p + c->in.off, c->held);
+    plain_done(c);
 }
 
 void tlsg_set_sni(int64_t h, tls_bytes name) {
@@ -1014,46 +1039,42 @@ int64_t tlsg_rec_seal(int64_t h, int64_t kind, tls_bytes data) {
     return (int64_t)d->seq;
 }
 
-/* Decrypts the record at the front of the bytes fed, whose header Goose has
-   checked and whose len bytes have all arrived, and drops it from them. The
-   content goes at the end of the plaintext only once its tag verifies, and
-   the result is its inner type << 32 | its length; or -1 for a record that
-   fails to decrypt, which leaves the bytes fed as they were, -2 for one with
-   no inner type, or -3 for one whose TLSInnerPlaintext passes 2^14 + 1
-   bytes (RFC 8446, section 5.4). */
+/* Decrypts, in place, the record at the front of the bytes fed, whose
+   header Goose has checked and whose len bytes have all arrived, once the
+   content read before it is gone. Its content becomes the plaintext only
+   once its tag verifies, and the result is its inner type << 32 | its
+   length; or -1 for a record that fails to decrypt, whose bytes are wiped
+   but stay in the bytes fed, -2 for one with no inner type, or -3 for one
+   whose TLSInnerPlaintext passes 2^14 + 1 bytes (RFC 8446, section 5.4). */
 int64_t tlsg_rec_open(int64_t h, int64_t len) {
     gconn *c = CONN(h);
     direction *d = &c->rd;
-    if (!d->c || len < 17 || (size_t)len + 5 > c->in.len || d->seq == UINT64_MAX) return -1;
+    if (!d->c || c->held || len < 17 || (size_t)len + 5 > c->in.len || d->seq == UINT64_MAX) return -1;
     size_t n = (size_t)len - 16;
-    uint8_t *p = q_room(&c->plain, n);
-    if (!p) return -1;
-    const uint8_t *hdr = c->in.p + c->in.off;
+    uint8_t *hdr = c->in.p + c->in.off, *p = hdr + 5;
     uint8_t iv[12];
     nonce(d, iv);
     int a = 0, f = 0;
     int ok = EVP_CipherInit_ex2(d->c, NULL, NULL, iv, 0, NULL) == 1 &&
-             EVP_DecryptUpdate(d->c, NULL, &a, hdr, 5) == 1 &&
-             EVP_DecryptUpdate(d->c, p, &a, hdr + 5, (int)n) == 1 &&
-             EVP_CIPHER_CTX_ctrl(d->c, EVP_CTRL_AEAD_SET_TAG, 16, (void *)(hdr + 5 + n)) == 1 &&
+             EVP_DecryptUpdate(d->c, NULL, &a, hdr, 5) == 1 && EVP_DecryptUpdate(d->c, p, &a, p, (int)n) == 1 &&
+             EVP_CIPHER_CTX_ctrl(d->c, EVP_CTRL_AEAD_SET_TAG, 16, p + n) == 1 &&
              EVP_DecryptFinal_ex(d->c, p + a, &f) == 1;
     if (!ok) {
         OPENSSL_cleanse(p, n);
-        if (!c->plain.len) q_free(&c->plain);
         return -1;
     }
     d->seq++;
-    q_drop(&c->in, 5 + (size_t)len);
     size_t k = n;
     while (k > 0 && p[k - 1] == 0) k--;
     if (k == 0 || n > 16385) {
         OPENSSL_cleanse(p, n);
-        if (!c->plain.len) q_free(&c->plain);
+        q_drop(&c->in, 5 + (size_t)len);
         return k == 0 ? -2 : -3;
     }
     uint8_t type = p[k - 1];
-    c->plain.len += k - 1;
-    if (!c->plain.len) q_free(&c->plain);
+    c->held = (uint16_t)(5 + len);
+    c->plain_len = (uint16_t)(k - 1);
+    if (!c->plain_len) plain_done(c);
     return (int64_t)type << 32 | (int64_t)(k - 1);
 }
 
