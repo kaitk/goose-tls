@@ -1,0 +1,3 @@
+// fuzz/build.sh compiles this program with libFuzzer; this sidecar keeps
+// fuzz.goose out of the package (docs/packages.md, "The native part").
+exclude = [];

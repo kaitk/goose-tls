@@ -1,0 +1,8 @@
+the first ClientHello becomes its message_hash: ok
+handshake keys: ok
+the server's Finished: ok
+sealed: ok
+the encrypted flight: ok
+application keys: ok
+the client's Finished, then handshake: 0
+cipher TLS_AES_128_GCM_SHA256, group secp256r1
