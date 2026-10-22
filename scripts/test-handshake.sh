@@ -9,9 +9,7 @@
 # name and ALPN offer, with TLS-ALPN-01's challenge certificate (the server's
 # choose option); the package's client (test/tools/client.goose) against a
 # public HTTPS server and against the test server's self-signed certificate;
-# a KeyUpdate from s_client each way; and the same over kTLS where the kernel
-# has it (the server's kernel option); where it hasn't, that the server falls
-# back to user space.
+# and a KeyUpdate from s_client each way.
 #
 # The certificate is a self-signed RSA-2048 pair made for the run, as
 # HttpArena mounts one. PORT (default 8081, HttpArena's HTTP/1.1 TLS port)
@@ -97,15 +95,6 @@ s_client() {
     # SNI localhost, unless the options name another.
     case " $* " in *" -servername "*) ;; *) set -- -servername localhost "$@" ;; esac
     printf '%b' "$input" | limit 10 "$openssl" s_client -connect "127.0.0.1:$port" "$@" 2>&1 || :
-}
-# The same, sending $1 and, a second later, "bye", which ends the connection. The
-# server asks for the kernel once it has answered what came with the handshake, so a
-# "bye" in the same read would close the connection before it asks.
-s_client_then_bye() {
-    input=$1
-    shift
-    { printf '%b' "$input"; sleep 1; printf 'bye\n'; } |
-        limit 10 "$openssl" s_client -connect "127.0.0.1:$port" -servername localhost "$@" 2>&1 || :
 }
 
 echo
@@ -311,41 +300,6 @@ echo
 echo "== KeyUpdate"
 start echo
 keyupdates "user space"
-
-echo
-echo "== kTLS"
-start echo kernel
-if grep -q '^kernel tls: yes' "$log"; then
-    # Changing keys in the kernel came in Linux 6.14.
-    release=$(uname -r | sed 's/[^0-9.].*//')
-    major=${release%%.*}
-    minor=$(echo "$release" | cut -d. -f2)
-    if [ "$major" -gt 6 ] || { [ "$major" -eq 6 ] && [ "$minor" -ge 14 ]; }; then
-        keyupdates "kTLS"
-        logged '^kernel record: type 22, UPDATE_TX$' && logged '^kernel record: type 22, 0$' &&
-            pass "both KeyUpdates went through kernel_record" ||
-            fail "KeyUpdates: $(cat "$log")"
-    else
-        out=$(s_client_then_bye 'hello, ktls\n' -ign_eof)
-        printf '%s\n' "$out" | grep -q '^hello, ktls$' && pass "kTLS: s_client gets back what it sent" ||
-            fail "kTLS echo: $out"
-        echo "  NOTE Linux $release can't change kTLS keys (6.14 can), so KeyUpdates weren't run"
-    fi
-    logged '^kernel: RX TX$' && pass "the kernel took both directions" ||
-        fail "the kernel didn't take both: $(cat "$log")"
-    start http kernel
-    got=$(limit 10 "$curl" -sk --http1.1 -d 'ping over ktls' "https://localhost:$port/echo" || :)
-    [ "$got" = "ping over ktls" ] && pass "curl --http1.1 POST over kTLS gets its body back" ||
-        fail "curl POST over kTLS: $got"
-    logged '^kernel: RX TX$' && pass "curl's connection went to the kernel" ||
-        fail "curl's connection: $(cat "$log")"
-else
-    out=$(s_client_then_bye 'hello, tls\n' -ign_eof)
-    printf '%s\n' "$out" | grep -q '^hello, tls$' && logged '^kernel: none' &&
-        pass "no kTLS in this kernel: the server serves from user space" ||
-        fail "no kTLS, and the fallback failed: $out $(cat "$log")"
-    echo "  NOTE this kernel has no kTLS, so the kTLS echo, KeyUpdates, and curl weren't run"
-fi
 
 stop
 echo

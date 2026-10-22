@@ -112,35 +112,12 @@ grep -l "$PWD\"" ~/.goose/build/pkg/local/*/*/wrapper/CMakeLists.txt
   certificate's form. Then the package's client: a verified handshake and a request to
   a public HTTPS server (`HTTPS_HOST`, default `example.com`; `none` skips it on a
   machine without the internet), and the test server's self-signed certificate refused.
-  Then an echo across s_client's two KeyUpdates, and the same over kTLS, with curl too,
-  where the kernel has it, or else that the server falls back to user space.
-  `OPENSSL` and `CURL` name other clients.
+  Then an echo across s_client's two KeyUpdates. `OPENSSL` and `CURL` name other
+  clients.
 - `scripts/test-crypto.sh`: builds `test/tools/crypto_files.goose`, which writes a key,
   a signature, a CSR, and certificates, from a key of its own and from one `openssl`
   made, and checks them with `openssl pkey`, `dgst -verify`, `req -verify`, `verify`,
   `x509 -text`, and `asn1parse`.
-
-The tests under `test/kernel/` check kTLS without a kernel: the shim's keys against RFC
-8448's traces, and a connection moved to the kernel, with `test/tools/peer/` playing the
-kernel's record layer and the client. They pass the shim stand-ins for a descriptor
-(`-1`, `-2` in `shim/ktls.c`) so it sets no socket option.
-
-### A kernel with kTLS
-
-kTLS needs Linux's `tls` module. `tls::kernel_supported()` reports it, or check by
-hand: `grep CONFIG_TLS /boot/config-$(uname -r)` (or `zcat /proc/config.gz`), and
-`sudo modprobe tls`, after which `/proc/net/tls_stat` exists and
-`/proc/sys/net/ipv4/tcp_available_ulp` lists `tls`. Docker Desktop's VM kernel has
-none (`7.0.14-linuxkit` on macOS arm64, `# CONFIG_TLS is not set`, checked 2026-10-19),
-so there the kTLS part of `scripts/test-handshake.sh` reports the fallback and skips
-the rest. A Linux machine or VM whose kernel has the module runs it; KeyUpdates through
-the kernel need Linux 6.14 or later, and on an older one (Ubuntu 24.04's 6.8, say) the
-script checks a kTLS echo without them. WSL2's kernel has it as a module
-(`6.18.54.1-microsoft-standard-WSL2`, `CONFIG_TLS=m`), not loaded at boot: run `sudo
-modprobe tls` after each WSL restart, and every step of `scripts/test.sh` passes there,
-the kTLS part included (2026-10-20). So does Bazzite 43's kernel on bare metal
-(`6.17.7-ba29.fc43.x86_64`, `CONFIG_TLS=m`, read from `/proc/config.gz`), after the
-same `sudo modprobe tls`, with the tests run in a Fedora 43 distrobox (2026-10-20).
 
 The handshake tests need `openssl`, `curl`, and `perl` (for a time limit, since macOS has
 no `timeout`). macOS's `curl` uses LibreSSL, which speaks TLS 1.3 and ALPN, so it serves.

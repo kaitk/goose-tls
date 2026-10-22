@@ -1,17 +1,13 @@
 // A TLS server for the handshake tests (scripts/test-handshake.sh), one
 // connection at a time over blocking sockets of its own (net.c).
 //
-//   echo_server PORT CERT KEY echo|http [kernel|choose]
+//   echo_server PORT CERT KEY echo|http [choose]
 //
 // echo sends back every byte it reads, and closes with close_notify after a
 // line "bye". http answers each HTTP/1.1 request: a POST with its body, any
 // other method with a small JSON object; it closes after a request that asks
 // to. For each connection it prints the version, the cipher, and the ALPN
 // protocol, or why the handshake failed. ALPN offers h2-less "http/1.1".
-//
-// With kernel, it moves each connection to kTLS after the handshake where the
-// kernel has it, and prints which directions the kernel took and each record
-// that isn't data; elsewhere it serves from user space, as without.
 //
 // With choose, it picks each connection's context at the ClientHello, as an
 // ACME client's TLS-ALPN-01 does: a client that sends acme.test in SNI and
@@ -33,11 +29,6 @@ extern fn net_accept(fd: i64) -> i64;
 extern fn net_recv(fd: i64, buf: u8[:]) -> i64;
 extern fn net_send(fd: i64, data: const u8[:]) -> i64;
 extern fn net_close(fd: i64);
-extern fn net_recv_record(fd: i64, buf: u8[:]) -> i64;
-extern fn net_record_type() -> i64;
-extern fn net_send_record(fd: i64, kind: i64, data: const u8[:]) -> i64;
-// The shim's, for tests: kTLS enabled on a context where the kernel has none.
-extern "tls_kernel_enable" fn kernel_enable(ctx: i64, anywhere: bool) -> bool;
 
 // Sends everything the connection has waiting.
 fn flush(c: tls::Conn, fd: i64, out: u8[:]) {
@@ -103,65 +94,6 @@ fn respond(http: bool, plain: const u8[:], req: u8[>..]&, reply: u8[>..]&) -> bo
     return ends_with(req, "bye\n");
 }
 
-fn kernel_name(dirs: i64) -> const u8[:] {
-    match dirs {
-        3 => "RX TX",
-        1 => "RX",
-        _ => "none",
-    }
-}
-
-fn record_status(r: i64) -> const u8[:] {
-    match r {
-        0 => "0",
-        tls::UPDATE_TX => "UPDATE_TX",
-        tls::CLOSED => "CLOSED",
-        _ => "FAILED",
-    }
-}
-
-// Serves the rest of a connection whose receiving the kernel holds, and
-// whose sending it holds too when tx is set.
-fn serve_kernel(c: tls::Conn, fd: i64, http: bool, tx: bool, req: u8[>..]&) {
-    var buf: u8[16384] = [0; 16384];
-    var out: u8[16384] = [0; 16384];
-    var done = false;
-    while !done {
-        let n = net_recv_record(fd, buf);
-        guard n > 0 else {
-            if n < 0 { print("kernel recv failed: errno ", -n); }
-            break;
-        }
-        let kind = net_record_type();
-        var closing = false;
-        if kind == 23 {
-            var reply: u8[>..] = [];
-            closing = respond(http, buf[..n], req, reply);
-            if tx { net_send(fd, reply); } else { tls::write(c, reply); }
-        } else {
-            let r = tls::kernel_record(c, fd, kind, buf[..n]);
-            print("kernel record: type ", kind, ", ", record_status(r));
-            if r == tls::UPDATE_TX {
-                net_send_record(fd, tls::RECORD_HANDSHAKE, tls::KEY_UPDATE);
-                if tls::kernel_update_tx(c, fd) != 0 {
-                    print("kernel_update_tx failed: ", tls::error_text());
-                    done = true;
-                }
-            } else if r == tls::CLOSED {
-                closing = true;
-            } else if r == tls::FAILED {
-                print("kernel_record failed: ", tls::error_text());
-                done = true;
-            }
-        }
-        if closing {
-            if tx { net_send_record(fd, tls::RECORD_ALERT, tls::CLOSE_NOTIFY); } else { tls::shutdown(c); }
-            done = true;
-        }
-        if !tx { flush(c, fd, out); }
-    }
-}
-
 // Moves a connection paused at its ClientHello to the context its SNI name
 // and ALPN offer pick.
 fn choose(c: tls::Conn) {
@@ -178,7 +110,7 @@ fn choose(c: tls::Conn) {
     print("hello: server_name '", name, "', acme-tls/1 ", acme_tls, ", context ", picked);
 }
 
-fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
+fn serve(ctx: tls::Context, fd: i64, http: bool) {
     let c = tls::accept(ctx);
     guard tls::ok(c) else { print("accept failed: ", tls::error_text()); return; }
     var buf: u8[16384] = [0; 16384];
@@ -187,14 +119,9 @@ fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
     var req: u8[>..] = [];
     var shaken = false;
     var done = false;
-    var asked = false;
-    // At most what completes a record, while the switch to the kernel waits
-    // for one to end.
-    var want = buf.len;
     while !done {
-        let n = net_recv(fd, buf[..want]);
+        let n = net_recv(fd, buf);
         guard n > 0 else { break; }
-        want = buf.len;
         tls::feed(c, buf[..n]);
         if !shaken {
             var h = tls::handshake(c);
@@ -229,27 +156,13 @@ fn serve(ctx: tls::Context, fd: i64, http: bool, kernel: bool) {
             }
         }
         flush(c, fd, out);
-        if kernel && shaken && !done && !asked {
-            let k = tls::to_kernel(c, fd);
-            if k == tls::WANT_INPUT {
-                want = tls::kernel_wants(c);
-            } else if k >= 0 {
-                asked = true;
-                let why: u8[>..] = if k == 0 { str(" (", tls::error_text(), ")") } else { "" };
-                print("kernel: ", kernel_name(k), why);
-                if (k & tls::KERNEL_RX) != 0 {
-                    serve_kernel(c, fd, http, (k & tls::KERNEL_TX) != 0, req);
-                    done = true;
-                }
-            }
-        }
     }
     flush(c, fd, out);
     tls::free(c);
 }
 
 fn main() {
-    let usage = "usage: echo_server PORT CERT KEY echo|http [kernel|choose]";
+    let usage = "usage: echo_server PORT CERT KEY echo|http [choose]";
     guard arg_count() == 5 || arg_count() == 6 else {
         print(usage);
         exit(2);
@@ -265,22 +178,14 @@ fn main() {
     arg(4, mode);
     var opt: u8[>..] = [];
     if arg_count() == 6 { arg(5, opt); }
-    guard pok && (mode == "echo" || mode == "http") && (opt == "" || opt == "kernel" || opt == "choose") else {
+    guard pok && (mode == "echo" || mode == "http") && (opt == "" || opt == "choose") else {
         print(usage);
         exit(2);
     }
-    let kernel = opt == "kernel";
     let ctx, ok = tls::server_files(crt, key, ["http/1.1"]);
     guard ok else {
         print("no context: ", tls::error_text());
         exit(1);
-    }
-    if kernel {
-        let yes = tls::use_kernel(ctx);
-        print("kernel tls: ", if yes { "yes" } else { "no" });
-        // Where the kernel has none, connections still try, to check that
-        // to_kernel leaves them in user space.
-        if !yes { kernel_enable(ctx.id, true); }
     }
     if opt == "choose" {
         var pem: u8[>..] = [];
@@ -315,7 +220,7 @@ fn main() {
     loop {
         let fd = net_accept(lfd);
         if fd >= 0 {
-            serve(ctx, fd, mode == "http", kernel);
+            serve(ctx, fd, mode == "http");
             net_close(fd);
         }
     }
