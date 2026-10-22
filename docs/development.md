@@ -70,15 +70,15 @@ and `goose run` configure `CMakeLists.txt` the first time, and CMake's
 | Platform | Install | Where CMake finds it |
 |---|---|---|
 | Debian, Ubuntu | `apt install cmake libssl-dev` | The system's (Ubuntu 24.04: 3.0.13) |
-| macOS | `brew install cmake openssl@3` | `/opt/homebrew/opt/openssl@3` on arm64, `/usr/local/opt/openssl@3` on x86_64 |
+| macOS | `brew install cmake openssl@3` | `/opt/homebrew/opt/openssl@3` on arm64, `/usr/local/opt/openssl@3` on x86_64 (macOS 26.3: 3.6.5; `openssl`'s 4.0.3) |
 | Windows | `vcpkg install openssl:x64-windows` ([Windows](#windows)) | `OPENSSL_ROOT_DIR`: vcpkg's `installed/x64-windows` |
 
 macOS's own `/usr/lib/libssl` is LibreSSL, without headers, and isn't used. Homebrew's
-`openssl` formula is OpenSSL 4.0; `CMakeLists.txt` takes `openssl@3` first, to match the
-Linux images, and `OPENSSL_ROOT_DIR` picks another:
+`openssl` formula is OpenSSL 4.0, installed as `openssl@4`; `CMakeLists.txt` takes
+`openssl@3` first, to match the Linux images, and `OPENSSL_ROOT_DIR` picks another:
 
 ```sh
-OPENSSL_ROOT_DIR=/opt/homebrew/opt/openssl@4 scripts/test.sh
+OPENSSL_ROOT_DIR=$(brew --prefix openssl) scripts/test.sh
 ```
 
 The program links OpenSSL's shared libraries, so the machine it runs on needs them too
@@ -135,6 +135,9 @@ GOOSE_TLS_SERVER=openssl GOOSE_HOME=$HOME/.goose-openssl scripts/test.sh
 
 The handshake tests need `openssl`, `curl`, and `perl` (for a time limit, since macOS has
 no `timeout`). macOS's `curl` uses LibreSSL, which speaks TLS 1.3 and ALPN, so it serves.
+macOS's `/usr/bin/openssl` is LibreSSL too (3.3.6 on macOS 26.3), which can't offer
+X25519MLKEM768, so `openssl` on `PATH` must be Homebrew's: `/opt/homebrew/bin/openssl`,
+the `openssl` formula's OpenSSL 4, serves for both builds and both OpenSSL versions.
 The test programs' sockets are POSIX only. The client's check of a public server needs
 OpenSSL's trust store filled: the `ca-certificates` package on Debian and Ubuntu, and
 Homebrew's `ca-certificates`, which its `openssl@3` depends on, on macOS.
@@ -142,6 +145,13 @@ Homebrew's `ca-certificates`, which its `openssl@3` depends on, on macOS.
 Two `goose build`s at once can fail in the package's shared CMake build
 ([findings](goose-findings.md)), so `test/run_tests.py` runs one build at a time and
 the test programs in parallel.
+
+`scripts/test-sanitizers.sh` builds the tests under `test/<area>/` with clang's ASan and
+UBSan, against the OpenSSL that CMake found for the package. On macOS it uses Apple
+clang, whose ASan has no leak detection on arm64, so leaks are checked on Linux only.
+
+macOS's `/bin/sh` is bash 3.2, which reads an apostrophe inside `"${VAR:?message}"` as
+an opening quote; check a script with `/bin/sh -n` there.
 
 ### On Linux, from macOS
 

@@ -21,7 +21,7 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 
 | | Feature | Notes |
 |---|---|---|
-| 🟡 | Server TLS 1.3 | The Goose server: a certificate chain and an EC P-256 or RSA key from PEM, ALPN chosen by the server, X25519MLKEM768, X25519, P-256, and P-384. Tested on Linux with OpenSSL 3.5.5, against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer, and with the golden tests on Windows with OpenSSL 3.6.5; not yet on macOS. libssl's server by build option, tested the same way (task 007). |
+| 🟡 | Server TLS 1.3 | The Goose server: a certificate chain and an EC P-256 or RSA key from PEM, ALPN chosen by the server, X25519MLKEM768, X25519, P-256, and P-384. Tested on Linux with OpenSSL 3.5.5 and on macOS with 3.6.5 and 4.0.3, against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer, and with the golden tests on Windows with OpenSSL 3.6.5. libssl's server by build option, tested the same way (task 007). |
 | 🟡 | Session tickets | Stateless, two after a full handshake, with ticket keys turned every two hours; resumption with `psk_dhe_ke`. Tested as the server above. |
 | 🟢 | A context per connection | Chosen by the program at the ClientHello, from the SNI name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's challenge certificate for `acme-tls/1`. |
 | 🟢 | Certificates replaced while running | Accept new connections from a new context; open ones keep theirs. |

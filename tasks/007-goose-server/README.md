@@ -258,6 +258,7 @@ server differs.
 | goose-tls | `main` | Step 1's documentation (`cd5c42c`) |
 | goose-tls | `goose-server` | Spike 02 and the server, with `no-ktls` merged in: `95e72c5` the server, `1fe0f33` spike 02's harness and results, `e7704f9` tlsfuzzer's fixes, `fe7cb36` RFC 8448's HelloRetryRequest and the fuzz targets, `b7fe12b` the tlsfuzzer and sanitizer scripts, `d0e859a` session tickets in both servers, `9bc8238` the benchmark's resumption mode, `c87d3ac` and `3792a59` a test hook and a test, `ba1ae99` the docs and tickets' measurements |
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
+| goose-tls | `macos-check` | The scripts' fixes for macOS and its results ([macOS](#macos)), from `goose-server` |
 | goose-http | `no-ktls` | kTLS's handoff removed (`d328c93b`), from its `main` |
 
 ## Measurements
@@ -291,6 +292,53 @@ X25519MLKEM768:
 Tickets add no idle memory to the Goose server and 65 B to a handshake in flight; the
 full handshake costs 10 µs more with them, OpenSSL's 31 µs, from runs an hour apart.
 
+## macOS
+
+Both builds pass on macOS with Homebrew's OpenSSL 3 and OpenSSL 4, with no change to
+the package's code (2026-10-22). Three script fixes were needed, none in the server.
+
+Setup: macOS 26.3.1 on an Apple M1 Pro (arm64), Apple clang 21.0.0
+(clang-2100.0.123.102), CMake 4.4.4, Homebrew's `openssl@3` 3.6.5 and `openssl`
+(`openssl@4`) 4.0.3, Goose v2026.3, goose-tls `ffbb51d` on `goose-server` (whose code
+`c134e9d` leaves unchanged). The peers were Homebrew's `openssl` 4.0.3 on `PATH` and
+macOS's `curl` 8.7.1 (LibreSSL 3.3.6), with `HTTPS_HOST` at its default, example.com.
+
+| Run | Server | OpenSSL | Result |
+|---|---|---|---|
+| `scripts/test.sh` | Goose | 3.6.5 | Passed: 12 golden tests at `-O0` and `-O2`, 82 handshake and crypto checks |
+| `scripts/test.sh` | libssl | 3.6.5 | Passed, the same |
+| `scripts/test.sh` | Goose | 4.0.3 | Passed, the same |
+| `scripts/test.sh` | libssl | 4.0.3 | Passed, the same |
+| `scripts/test-sanitizers.sh` | Goose | 3.6.5 | Passed after the fixes below: 11 tests, debug and release, ASan and UBSan without leak detection, which Apple clang's ASan lacks on arm64 |
+| `scripts/test-sanitizers.sh` | Goose | 4.0.3 | Passed, the same |
+| `scripts/test-tlsfuzzer.sh` | Goose | 3.6.5 | Every failure one of [tlsfuzzer.md](tlsfuzzer.md)'s expected ones, after the fixes below |
+
+The only `NOTE` in each handshake run is the one Linux prints: this `openssl` can't offer
+SSLv3, so those HttpArena probes weren't run. The X25519MLKEM768 checks ran against both
+OpenSSL versions. The libFuzzer targets weren't run: Apple clang has no libFuzzer.
+
+tlsfuzzer `5eebc44` and tlslite-ng `7e95ea1`, as on Linux, matched
+[tlsfuzzer.md](tlsfuzzer.md)'s counts but for two scripts that run a random sample of
+their probes: signature-algorithms passed 102 of 102, its sample without the
+32,715-scheme probes, and version-negotiation failed 196 of 202, all fallbacks to
+TLS 1.2, two of them the "legacy field" probes that expect a TLS 1.2 ServerHello.
+connection-abort passed 150 of 150, session-resumption 4 of 7, and count-tickets with
+`-t 2` 3 of 3.
+
+The fixes, on the branch `macos-check`:
+
+- `b5ea8fb`: `scripts/test-sanitizers.sh` and `scripts/test-tlsfuzzer.sh` were committed
+  without the executable bit (`zsh: permission denied`).
+- `708b5c0`: macOS's `/bin/sh`, bash 3.2, couldn't parse `scripts/test-tlsfuzzer.sh`
+  (`line 67: unexpected EOF while looking for matching '''`): it reads the apostrophe
+  in `"${TLSFUZZER:?... tlsfuzzer's checkouts}"` as a quote. The message is reworded.
+- `f481efa`: `scripts/test-sanitizers.sh` linked `-lssl -lcrypto` from clang's default
+  paths, which hold no OpenSSL on macOS (`shim/crypto.c:14:10: fatal error:
+  'openssl/asn1.h' file not found`). It now takes the include and library directories
+  from the package's CMake cache, which also makes it follow `OPENSSL_ROOT_DIR`. Checked
+  again on Linux: Ubuntu 26.04 on arm64 in Docker, OpenSSL 3.5.5, all 22 clean, with
+  leak detection.
+
 ## Questions for the maintainer
 
 None blocks the work. Two to confirm before the merge:
@@ -298,10 +346,12 @@ None blocks the work. Two to confirm before the merge:
 - **Merge `goose-server` into `main`?** Steps 1 to 5 are done on it, with `no-ktls`
   merged in; both builds pass `scripts/test.sh`, the sanitizers, and the fuzzers on
   Linux, and the golden tests and `test-crypto.sh` on Windows (clang-cl, OpenSSL
-  3.6.5; [development](../../docs/development.md#windows)). Options: merge now and test
-  macOS after; or test macOS first (Homebrew's OpenSSL 3 and 4). Recommendation: either
-  works, as Linux and Windows pass; macOS's only platform-specific code is the ticket
-  clock's `clock_gettime`. Meanwhile: nothing merged; the branch is pushed.
+  3.6.5; [development](../../docs/development.md#windows)), and on macOS everything
+  but the libFuzzer targets, with OpenSSL 3 and 4 ([macOS](#macos)), whose script fixes are on
+  `macos-check`. Options: merge `macos-check` into `goose-server`, then `goose-server`
+  into `main`; or merge `goose-server` alone and the fixes after. Recommendation: the
+  former, as every platform now passes. Meanwhile: nothing merged; both branches are
+  pushed.
 - **Test hooks in the shipped library.** `tlsg_ks_set` (RFC 8448's tests set a
   secret) and `tlsg_ticket_clock` (the tests move the ticket clock) are exported by the
   package's C, though only tests call them. Options: keep them, documented as for
@@ -316,7 +366,6 @@ None blocks the work. Two to confirm before the merge:
 
 - goose-http's client check (step 6): its suites over this branch, and curl, wrk,
   h2load, oha, Chromium, and Firefox, with resumption recorded.
-- macOS: both builds' `scripts/test.sh`, with OpenSSL 3 and 4.
 - The resumption fuzz target (step 5).
 - Step 7, once merged: json-tls and 8gbit over the network, a release, and goose-http's
   pin.
