@@ -55,6 +55,6 @@ with it is open. Task 005, done, measured rustls against OpenSSL (spike 01): rus
 used under a third of the memory per connection, and less CPU. Task 006, a Rust library
 over rustls, was cancelled on 2026-10-22. Task 007 replaces it: a TLS 1.3 server in
 Goose over libcrypto, with session tickets, kTLS removed, and OpenSSL kept as a
-build-time alternative. Its spike (02) passed; the server and its tickets are on the
-branch `goose-server`, not yet merged.
+build-time alternative. Its spike (02) passed; the server and its tickets are released
+in `v0.0.4`, and goose-http's client check and network benchmarks remain.
 

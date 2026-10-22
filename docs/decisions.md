@@ -11,9 +11,9 @@ with its reason and the trade-off that matters.
   that imports that module declares goose-tls in its root file (goose-http's task 014,
   2026-10-11; repository created 2026-10-19).
 - **Bindings, not TLS in Goose.** Constant-time cryptography, the record layer, and
-  X.509 are out of scope. To be superseded for the server's connections by "A TLS 1.3
-  server in Goose over libcrypto", below, once spike 02 passes; cryptography and X.509
-  stay OpenSSL's. Corrected 2026-10-22: this entry said HttpArena requires a standard TLS
+  X.509 are out of scope. Superseded for the server's connections by "A TLS 1.3 server
+  in Goose over libcrypto", below (2026-10-22, `v0.0.4`); cryptography and X.509 stay
+  OpenSSL's. Corrected 2026-10-22: this entry said HttpArena requires a standard TLS
   stack (its `json-tls` implementation rules, read at `2d85137`, 2026-10-18). At
   HttpArena `f020b9b` that rule applies only to entries of type `standard` and
   `infrastructure`; goose-http's entry is of type `engine`, which has no specific rules
@@ -160,13 +160,11 @@ with its reason and the trade-off that matters.
   freed (6 KB), and during the handshake a 21.8 KB message buffer and an 8 KB
   buffering BIO.
 
-## Agreed, pending measurement
+## Task 007's server
 
-The decisions above stay in force until these land.
+Agreed 2026-10-22 pending spike 02, which passed the same day; released in `v0.0.4`.
 
-- **A TLS 1.3 server in Goose over libcrypto (2026-10-22; agreed, pending spike 02;
-  spike 02 passed 2026-10-22, and the server is on the branch `goose-server`, not yet
-  merged).**
+- **A TLS 1.3 server in Goose over libcrypto (2026-10-22).**
   goose-tls's server connections move from libssl to a TLS 1.3 server whose protocol
   and record layer are written in this package, Goose by default, over libcrypto's EVP
   for every cryptographic primitive: AEAD, hashes, HMAC and HKDF, key exchange,
@@ -215,7 +213,7 @@ The decisions above stay in force until these land.
 - **ALPN with no match fails the handshake (2026-10-21, kept 2026-10-22).** A client
   that offers ALPN but none of the server's protocols gets the `no_application_protocol`
   alert, as RFC 7301, section 3.2, requires, from both the Goose server and the OpenSSL
-  alternative. Today's shim answers such a client without ALPN. A client that offers no
-  ALPN still connects, with none. The trade-off: a client that offers only protocols
-  the server lacks can no longer connect; HttpArena's clients offer what the server
-  speaks. Lands with task 007's server.
+  alternative; before `v0.0.4`, the server answered such a client without ALPN. A
+  client that offers no ALPN still connects, with none. The trade-off: a client that
+  offers only protocols the server lacks can no longer connect; HttpArena's clients
+  offer what the server speaks.

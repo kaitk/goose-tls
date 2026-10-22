@@ -1,9 +1,10 @@
 # 007: A TLS 1.3 server in Goose over libcrypto
 
 Status: in-progress (direction agreed 2026-10-22; spike 02 passed its go/no-go on
-2026-10-22; the full server and its session tickets are on the branch `goose-server`,
-steps 1 to 6 done but for goose-http's client check; step 7, and merging, wait for
-the maintainer)
+2026-10-22; the server and its session tickets merged to `main` and released in
+`v0.0.4` on 2026-10-22, ahead of step 7's network benchmarks at the maintainer's
+request; goose-http's client check, those benchmarks, and the resumption fuzz target
+remain)
 
 goose-tls's server connections move from OpenSSL's libssl to a TLS 1.3 server written in
 Goose, with libcrypto's EVP for every cryptographic primitive. The reason is memory:
@@ -109,7 +110,7 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 ### 6. kTLS removed
 
 - [x] goose-tls's kTLS code, API, tests, and docs removed: branch `no-ktls`
-      (`7ffb6f7`), whose `scripts/test.sh` passes on Linux (2026-10-22)
+      (`7ffb6f7`), whose `scripts/test.sh` passes on Linux (2026-10-22); in `v0.0.4`
 - [x] goose-http's handoff, record-control, and platform-stub paths removed: branch
       `no-ktls` in goose-http (`d328c93b`), whose `scripts/test.sh` passes on Linux
       (2026-10-22), still on goose-tls `v0.0.3`, whose kTLS calls it no longer makes;
@@ -121,12 +122,13 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 
 - [ ] json-tls and 8gbit in separate server and client processes over the network,
       with production ticket settings and the server process's memory
-- [ ] A release, goose-http's pin moved, and a documented rebuild and redeploy command
-      for the OpenSSL build
+- [ ] A release and goose-http's pin moved: `v0.0.4` (2026-10-22); goose-http's pin
+      in progress
+- [ ] A documented rebuild and redeploy command for the OpenSSL build, in goose-http
 
 ## How the server is built
 
-What the plan left to the spike, as built on `goose-server`:
+What the plan left to the spike, as built:
 
 - **C owns the memory; Goose decides.** A context and a connection are objects
   `shim/server.c` allocates; handles are their addresses with bit 0 set, so that
@@ -255,7 +257,7 @@ server differs.
 
 | Repository | Branch | What |
 |---|---|---|
-| goose-tls | `main` | Step 1's documentation (`cd5c42c`) |
+| goose-tls | `main` | Step 1's documentation (`cd5c42c`); then `goose-server` and `macos-check`, fast-forwarded, and `v0.0.4` (2026-10-22) |
 | goose-tls | `goose-server` | Spike 02 and the server, with `no-ktls` merged in: `95e72c5` the server, `1fe0f33` spike 02's harness and results, `e7704f9` tlsfuzzer's fixes, `fe7cb36` RFC 8448's HelloRetryRequest and the fuzz targets, `b7fe12b` the tlsfuzzer and sanitizer scripts, `d0e859a` session tickets in both servers, `9bc8238` the benchmark's resumption mode, `c87d3ac` and `3792a59` a test hook and a test, `ba1ae99` the docs and tickets' measurements |
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
 | goose-tls | `macos-check` | The scripts' fixes for macOS and its results ([macOS](#macos)), from `goose-server` |
@@ -341,17 +343,11 @@ The fixes, on the branch `macos-check`:
 
 ## Questions for the maintainer
 
-None blocks the work. Two to confirm before the merge:
+None blocks the work.
 
-- **Merge `goose-server` into `main`?** Steps 1 to 5 are done on it, with `no-ktls`
-  merged in; both builds pass `scripts/test.sh`, the sanitizers, and the fuzzers on
-  Linux, and the golden tests and `test-crypto.sh` on Windows (clang-cl, OpenSSL
-  3.6.5; [development](../../docs/development.md#windows)), and on macOS everything
-  but the libFuzzer targets, with OpenSSL 3 and 4 ([macOS](#macos)), whose script fixes are on
-  `macos-check`. Options: merge `macos-check` into `goose-server`, then `goose-server`
-  into `main`; or merge `goose-server` alone and the fixes after. Recommendation: the
-  former, as every platform now passes. Meanwhile: nothing merged; both branches are
-  pushed.
+- **Merge `goose-server` into `main`?** Answered 2026-10-22: merged with `macos-check`'s
+  fixes, and released as `v0.0.4` for goose-http's pin. Linux, Windows, and macOS
+  passed first; step 7's network benchmarks follow the release.
 - **Test hooks in the shipped library.** `tlsg_ks_set` (RFC 8448's tests set a
   secret) and `tlsg_ticket_clock` (the tests move the ticket clock) are exported by the
   package's C, though only tests call them. Options: keep them, documented as for
@@ -364,8 +360,8 @@ None blocks the work. Two to confirm before the merge:
 
 ## Next
 
-- goose-http's client check (step 6): its suites over this branch, and curl, wrk,
-  h2load, oha, Chromium, and Firefox, with resumption recorded.
+- goose-http on `v0.0.4`: its pin moved and its suites run.
+- goose-http's client check (step 6): curl, wrk, h2load, oha, Chromium, and Firefox,
+  with resumption recorded.
 - The resumption fuzz target (step 5).
-- Step 7, once merged: json-tls and 8gbit over the network, a release, and goose-http's
-  pin.
+- Step 7: json-tls and 8gbit over the network.

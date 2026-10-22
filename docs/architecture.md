@@ -3,8 +3,7 @@
 How goose-tls works, for programs that use it. Why it works this way is in
 [decisions](decisions.md).
 
-This page describes the package on the branch `goose-server` (task 007): server
-connections run a TLS 1.3 server written in this package, in Goose over libcrypto, and
+Since `v0.0.4` (task 007), server connections run a TLS 1.3 server written in this package, in Goose over libcrypto, and
 client connections run OpenSSL's libssl. A package built with `GOOSE_TLS_SERVER=openssl`
 serves with libssl instead, through the same API ([development](development.md)).
 kTLS is retired ([decisions](decisions.md)): every connection's record layer runs in

@@ -80,9 +80,8 @@ This package is where the Goose packages keep TLS's C ([decisions](docs/decision
   hashes, HMAC and HKDF, key exchange, signatures, and random bytes. Don't write them in
   Goose or in the shim.
 - The TLS 1.3 server's protocol and record layer are this package's own, written in
-  Goose by default (agreed 2026-10-22, pending spike 02; task 007). Until spike 02
-  passes and the server lands, connections run on libssl, which also keeps the client,
-  PEM loading, and the server alternative selected at build time.
+  Goose (task 007, `v0.0.4`). libssl keeps the client, PEM loading, and the server
+  alternative selected at build time.
 - The C in `shim/` adapts OpenSSL's API to Goose: opaque handles, bytes in and bytes
   out, and error codes. It may also own what Goose can't hold, such as native handles,
   reference counts, and byte buffers that outlive a call, where that is simpler or
