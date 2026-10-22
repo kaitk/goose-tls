@@ -343,6 +343,9 @@ got=$("$openssl" asn1parse -in "$work/challenge.crt" 2>/dev/null |
 out=$(s_client 'hello, other\nbye\n' -servername other.test -ign_eof)
 printf '%s\n' "$out" | grep -q '^hello, other$' && pass "other.test's connection echoes" ||
     fail "other.test's echo: $out"
+# A ticket opens under the context chosen for the connection.
+check_resumed "New tickets=2 hellos=1 certificates=1" -servername other.test -sess_out "$work/other.pem"
+check_resumed "Reused tickets=1 hellos=1 certificates=0" -servername other.test -sess_in "$work/other.pem"
 
 echo
 echo "== The package's client"
