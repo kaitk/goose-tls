@@ -1190,7 +1190,11 @@ void tlsg_fail(int64_t reason, tls_bytes text) {
         ERR_raise(ERR_LIB_SSL, (int)reason);
 }
 
-void tlsg_clear_errors(void) { ERR_clear_error(); }
+/* ERR_clear_error sweeps every slot of the queue; reading it first skips
+   that on the calls that find it empty, nearly all of them. */
+void tlsg_clear_errors(void) {
+    if (ERR_peek_error()) ERR_clear_error();
+}
 
 /* Which server new contexts are: 1 for libssl's, chosen when the package's
    C is configured (CMakeLists.txt, GOOSE_TLS_SERVER), else 0 for Goose's. */
