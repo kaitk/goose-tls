@@ -398,8 +398,9 @@ minutes each, at once, with no findings: `fuzz_hello` 143,646,667 runs, `fuzz_co
 12,200,310, and `fuzz_open` 1,246,726; and at `0412aba`, before the HMAC change,
 141,673,074, 11,919,720, and 843,486. tlsfuzzer's scripts gave the counts in
 [tlsfuzzer.md](tlsfuzzer.md), but for keyupdate's intermittent failure, which `main`
-before this work shows as well (there). The golden tests weren't run on Windows: the
-machine had no vcpkg OpenSSL then.
+before this work shows as well (there). On Windows 11 (Git Bash, clang-cl, vcpkg's
+OpenSSL 3.6.5), `test/run_tests.py` passed on both builds and `scripts/test-crypto.sh`
+on the Goose server's.
 
 ## macOS
 
