@@ -18,11 +18,15 @@ mkdir -p "$out"
 # part (docs/development.md, "OpenSSL"); a build of the smallest test makes it.
 "$GOOSE" build -o "$out/probe" "$root/test/conn/hello.goose" >/dev/null
 wrapper=$(grep -l "$root\"" "${GOOSE_HOME:-$HOME/.goose}"/build/pkg/local/*/*/wrapper/CMakeLists.txt | head -1)
-cp "$(dirname "$(dirname "$wrapper")")/include/goose.h" "$out/goose.h"
+pkg=$(dirname "$(dirname "$wrapper")")
+cp "$pkg/include/goose.h" "$out/goose.h"
+# The OpenSSL that CMake found for that build, such as Homebrew's on macOS.
+ssl_include=$(sed -n 's/^OPENSSL_INCLUDE_DIR:PATH=//p' "$pkg/cmake/CMakeCache.txt")
+ssl_lib=$(dirname "$(sed -n 's/^OPENSSL_CRYPTO_LIBRARY:FILEPATH=//p' "$pkg/cmake/CMakeCache.txt")")
 
 shims="$root/shim/server.c $root/shim/tls.c $root/shim/crypto.c"
 cflags="-g -O1 -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer
-        -DOPENSSL_API_COMPAT=30000 -DOPENSSL_NO_DEPRECATED -I$out -I$root/shim"
+        -DOPENSSL_API_COMPAT=30000 -DOPENSSL_NO_DEPRECATED -I$out -I$root/shim -I$ssl_include -L$ssl_lib"
 fails=0
 for test in "$root"/test/*/*.goose; do
     case $test in */tools/* | */expected/*) continue ;; esac
