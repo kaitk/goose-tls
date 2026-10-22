@@ -1,0 +1,986 @@
+/* The C under the TLS 1.3 server written in Goose (server.goose,
+   docs/architecture.md): libcrypto's primitives as calls on a connection,
+   and the memory Goose can't own across calls and threads. The protocol's
+   decisions are all Goose's: which message comes next, what is checked, the
+   key schedule's order and labels. This file only does what it is told.
+
+   - A context: the certificate chain as DER, the key, and the settings a
+     handshake reads, shared by every connection and thread that holds a
+     reference to it.
+   - A connection: three byte queues (bytes fed and not yet read, plaintext
+     not yet read, bytes waiting for drain), each freed once empty; the
+     record keys and sequence numbers of each direction; during the
+     handshake, its transcript and its secrets; and a copy of the Goose
+     server's state, which each call loads and stores.
+
+   Secrets never cross to Goose. A handshake's secrets sit in numbered slots
+   that Goose names; a direction's traffic secret sits beside its keys for a
+   KeyUpdate; everything secret is cleansed when it is replaced or freed.
+
+   A handle is the object's address with bit 0 set, as an int64_t, so that
+   tls.goose tells these from libssl's objects, whose handles are even. 0 is
+   none. Written against OpenSSL 3.0's API with nothing deprecated; ML-KEM
+   is used only where the provider has it (3.5 or later). */
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <openssl/bio.h>
+#include <openssl/core_names.h>
+#include <openssl/crypto.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/params.h>
+#include <openssl/pem.h>
+#include <openssl/rand.h>
+#include <openssl/rsa.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+
+#include "goose.h"
+#include "tls.h"
+
+/* The Goose server's state, opaque here: tlsg_load and tlsg_store copy it,
+   and Goose passes the address of its last byte so that its size needs no
+   mirror in C. */
+#define STATE_CAP 256
+
+/* Handshake secret slots: room for the largest secret, a hybrid group's
+   64-byte shared secret. */
+#define SLOTS 12
+#define SLOT_CAP 64
+
+/* Signature schemes (RFC 8446, section 4.2.3) and groups (section 4.2.7;
+   RFC 10024 for X25519MLKEM768), as server.goose names them. */
+#define SCHEME_ECDSA_P256_SHA256 0x0403
+#define SCHEME_RSA_PSS_RSAE_SHA256 0x0804
+#define GROUP_P256 0x0017
+#define GROUP_P384 0x0018
+#define GROUP_X25519 0x001d
+#define GROUP_X25519MLKEM768 0x11ec
+
+#define MLKEM768_EK 1184
+#define MLKEM768_CT 1088
+
+typedef struct {
+    uint16_t code;
+    EVP_CIPHER *cipher;
+    EVP_MD *md;
+    size_t key_len, hash_len;
+} suite_t;
+
+/* Algorithms fetched once for the process, as the plan asks: none is
+   fetched per record or per handshake. */
+static struct {
+    suite_t suites[3];
+    EVP_KDF *hkdf;
+    int mlkem;
+} alg;
+static int alg_ok;
+static CRYPTO_ONCE alg_once = CRYPTO_ONCE_STATIC_INIT;
+
+static void alg_init(void) {
+    /* The server raises libssl's reasons (tlsg_fail), whose text libssl
+       loads only when it starts. */
+    OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS, NULL);
+    static const struct { uint16_t code; const char *cipher, *md; size_t key_len; } defs[3] = {
+        { 0x1301, "AES-128-GCM", "SHA256", 16 },
+        { 0x1302, "AES-256-GCM", "SHA384", 32 },
+        { 0x1303, "ChaCha20-Poly1305", "SHA256", 32 },
+    };
+    for (int i = 0; i < 3; i++) {
+        suite_t *s = &alg.suites[i];
+        s->code = defs[i].code;
+        s->cipher = EVP_CIPHER_fetch(NULL, defs[i].cipher, NULL);
+        s->md = EVP_MD_fetch(NULL, defs[i].md, NULL);
+        s->key_len = defs[i].key_len;
+        s->hash_len = s->md ? (size_t)EVP_MD_get_size(s->md) : 0;
+        if (!s->cipher || !s->md) return;
+    }
+    alg.hkdf = EVP_KDF_fetch(NULL, OSSL_KDF_NAME_HKDF, NULL);
+    EVP_KEM *kem = EVP_KEM_fetch(NULL, "ML-KEM-768", NULL);
+    alg.mlkem = kem != NULL;
+    EVP_KEM_free(kem);
+    ERR_clear_error();
+    alg_ok = alg.hkdf != NULL;
+}
+
+static int algs(void) { return CRYPTO_THREAD_run_once(&alg_once, alg_init) && alg_ok; }
+
+static const suite_t *suite_of(int64_t code) {
+    for (int i = 0; i < 3; i++)
+        if (alg.suites[i].code == code) return &alg.suites[i];
+    return NULL;
+}
+
+/* ---- Contexts ---- */
+
+typedef struct {
+    int refs;
+    CRYPTO_RWLOCK *lock;
+    EVP_PKEY *key;
+    uint16_t scheme;
+    /* The chain, leaf first: each certificate's DER after a 3-byte length,
+       as RFC 8446's CertificateEntry has it. */
+    uint8_t *chain;
+    size_t chain_len;
+    uint8_t *alpn;
+    size_t alpn_len;
+    uint8_t groups[16];
+    size_t groups_len;
+    uint8_t choose;
+} gctx;
+
+#define CTX(h) ((gctx *)(intptr_t)((h) & ~(int64_t)1))
+#define HANDLE(p) ((int64_t)(intptr_t)(p) | 1)
+
+static void ctx_release(gctx *c) {
+    int refs = 0;
+    if (!c || !CRYPTO_atomic_add(&c->refs, -1, &refs, c->lock) || refs > 0) return;
+    EVP_PKEY_free(c->key);
+    OPENSSL_free(c->chain);
+    OPENSSL_free(c->alpn);
+    CRYPTO_THREAD_lock_free(c->lock);
+    OPENSSL_free(c);
+}
+
+static int ctx_retain(gctx *c) {
+    int refs = 0;
+    return c && CRYPTO_atomic_add(&c->refs, 1, &refs, c->lock) && refs > 1;
+}
+
+/* The scheme the key signs with: ECDSA for a P-256 key, RSA-PSS for an RSA
+   key of 2048 bits or more; 0 for any other. */
+static uint16_t scheme_of(EVP_PKEY *k) {
+    char group[32];
+    size_t n = 0;
+    if (EVP_PKEY_is_a(k, "EC") &&
+        EVP_PKEY_get_utf8_string_param(k, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof group, &n) == 1 &&
+        strcmp(group, "prime256v1") == 0)
+        return SCHEME_ECDSA_P256_SHA256;
+    if (EVP_PKEY_is_a(k, "RSA") && EVP_PKEY_get_bits(k) >= 2048) return SCHEME_RSA_PSS_RSAE_SHA256;
+    return 0;
+}
+
+static int chain_add(gctx *c, X509 *x) {
+    int n = i2d_X509(x, NULL);
+    if (n <= 0 || n > 0xffffff) return 0;
+    uint8_t *p = OPENSSL_realloc(c->chain, c->chain_len + 3 + (size_t)n);
+    if (!p) return 0;
+    c->chain = p;
+    p += c->chain_len;
+    p[0] = (uint8_t)(n >> 16), p[1] = (uint8_t)(n >> 8), p[2] = (uint8_t)n;
+    uint8_t *q = p + 3;
+    if (i2d_X509(x, &q) != n) return 0;
+    c->chain_len += 3 + (size_t)n;
+    return 1;
+}
+
+/* A server context from PEM text: the leaf and any intermediates, and the
+   leaf's key, which must match it and be one the server signs with. 0 when
+   any of it fails, with the reason in OpenSSL's error queue. */
+int64_t tlsg_ctx_new(tls_bytes chain, tls_bytes key) {
+    ERR_clear_error();
+    if (!algs()) return 0;
+    if (chain.len <= 0 || chain.len > INT32_MAX || key.len <= 0 || key.len > INT32_MAX) return 0;
+    gctx *c = OPENSSL_zalloc(sizeof *c);
+    if (!c) return 0;
+    c->refs = 1;
+    c->lock = CRYPTO_THREAD_lock_new();
+    BIO *cb = BIO_new_mem_buf(chain.data, (int)chain.len);
+    BIO *kb = BIO_new_mem_buf(key.data, (int)key.len);
+    X509 *leaf = cb ? PEM_read_bio_X509(cb, NULL, NULL, NULL) : NULL;
+    int ok = c->lock && kb && leaf && chain_add(c, leaf);
+    while (ok) {
+        X509 *ca = PEM_read_bio_X509(cb, NULL, NULL, NULL);
+        if (!ca) break;
+        ok = chain_add(c, ca);
+        X509_free(ca);
+    }
+    if (ok) {
+        /* The loop ends on the PEM reader's "no start line" at the end. */
+        ERR_clear_error();
+        c->key = PEM_read_bio_PrivateKey(kb, NULL, NULL, NULL);
+        ok = c->key && X509_check_private_key(leaf, c->key) == 1;
+    }
+    if (ok) {
+        c->scheme = scheme_of(c->key);
+        if (!c->scheme) {
+            ERR_raise_data(ERR_LIB_SSL, SSL_R_UNKNOWN_CERTIFICATE_TYPE, "%s",
+                           "the key must be EC P-256, or RSA of 2048 bits or more");
+            ok = 0;
+        }
+    }
+    X509_free(leaf);
+    BIO_free(cb);
+    BIO_free(kb);
+    if (!ok) {
+        ctx_release(c);
+        return 0;
+    }
+    return HANDLE(c);
+}
+
+int64_t tlsg_ctx_share(int64_t h) { return ctx_retain(CTX(h)) ? h : 0; }
+
+void tlsg_ctx_free(int64_t h) { ctx_release(CTX(h)); }
+
+/* Sets the context's ALPN protocols, in wire format, before it accepts. */
+uint8_t tlsg_ctx_set_alpn(int64_t h, tls_bytes alpn) {
+    gctx *c = CTX(h);
+    if (!c || alpn.len < 0 || alpn.len > 65535) return 0;
+    uint8_t *p = alpn.len ? OPENSSL_memdup(alpn.data, (size_t)alpn.len) : NULL;
+    if (alpn.len && !p) return 0;
+    OPENSSL_free(c->alpn);
+    c->alpn = p;
+    c->alpn_len = (size_t)alpn.len;
+    return 1;
+}
+
+/* Sets the context's groups, 2-byte codes in order of preference, before it
+   accepts. */
+uint8_t tlsg_ctx_set_groups(int64_t h, tls_bytes groups) {
+    gctx *c = CTX(h);
+    if (!c || groups.len <= 0 || groups.len > (int64_t)sizeof c->groups || groups.len % 2) return 0;
+    memcpy(c->groups, groups.data, (size_t)groups.len);
+    c->groups_len = (size_t)groups.len;
+    return 1;
+}
+
+void tlsg_ctx_set_choose(int64_t h) {
+    if (CTX(h)) CTX(h)->choose = 1;
+}
+
+void tlsg_ctx_alpn(int64_t h, gs_rref out) {
+    if (CTX(h) && CTX(h)->alpn_len) gs_bld_append(out, CTX(h)->alpn, (int64_t)CTX(h)->alpn_len);
+}
+
+void tlsg_ctx_groups(int64_t h, gs_rref out) {
+    if (CTX(h)) gs_bld_append(out, CTX(h)->groups, (int64_t)CTX(h)->groups_len);
+}
+
+void tlsg_ctx_chain(int64_t h, gs_rref out) {
+    if (CTX(h)) gs_bld_append(out, CTX(h)->chain, (int64_t)CTX(h)->chain_len);
+}
+
+uint8_t tlsg_ctx_chooses(int64_t h) { return CTX(h) && CTX(h)->choose; }
+
+int64_t tlsg_ctx_scheme(int64_t h) { return CTX(h) ? CTX(h)->scheme : 0; }
+
+/* Whether the provider has what a group needs. */
+uint8_t tlsg_has_group(int64_t group) {
+    if (!algs()) return 0;
+    switch (group) {
+    case GROUP_X25519:
+    case GROUP_P256:
+    case GROUP_P384:
+        return 1;
+    case GROUP_X25519MLKEM768:
+        return (uint8_t)alg.mlkem;
+    default:
+        return 0;
+    }
+}
+
+/* ---- Connections ---- */
+
+/* Bytes p[off..off + len), in a buffer of cap bytes, freed once empty. */
+typedef struct {
+    uint8_t *p;
+    size_t off, len, cap;
+} queue;
+
+typedef struct {
+    EVP_CIPHER_CTX *c;
+    uint8_t iv[12];
+    uint64_t seq;
+    uint8_t secret[48];
+} direction;
+
+typedef struct {
+    EVP_MD_CTX *md;
+    uint8_t slot[SLOTS][SLOT_CAP];
+    uint8_t slot_len[SLOTS];
+    uint8_t *hello;
+    size_t hello_len;
+} handshake;
+
+typedef struct {
+    gctx *ctx;
+    const suite_t *suite;
+    queue in, plain, out;
+    direction rd, wr;
+    handshake *hs;
+    char *sni;
+    uint8_t sni_len;
+    uint8_t state[STATE_CAP];
+} gconn;
+
+#define CONN(h) ((gconn *)(intptr_t)((h) & ~(int64_t)1))
+
+static void q_free(queue *q) {
+    OPENSSL_free(q->p);
+    memset(q, 0, sizeof *q);
+}
+
+/* Room for n more bytes at the end; 0 when the allocation fails. */
+static uint8_t *q_room(queue *q, size_t n) {
+    if (q->off + q->len + n <= q->cap) return q->p + q->off + q->len;
+    if (q->off) {
+        memmove(q->p, q->p + q->off, q->len);
+        q->off = 0;
+        if (q->len + n <= q->cap) return q->p + q->len;
+    }
+    size_t cap = q->len + n;
+    uint8_t *p = OPENSSL_realloc(q->p, cap);
+    if (!p) return NULL;
+    q->p = p;
+    q->cap = cap;
+    return q->p + q->len;
+}
+
+static int q_put(queue *q, const void *data, size_t n) {
+    uint8_t *p = q_room(q, n);
+    if (!p) return 0;
+    memcpy(p, data, n);
+    q->len += n;
+    return 1;
+}
+
+static void q_drop(queue *q, size_t n) {
+    if (n >= q->len) {
+        q_free(q);
+        return;
+    }
+    q->off += n;
+    q->len -= n;
+}
+
+static void dir_clear(direction *d) {
+    EVP_CIPHER_CTX_free(d->c);
+    OPENSSL_cleanse(d, sizeof *d);
+}
+
+static void hs_free(gconn *c) {
+    if (!c->hs) return;
+    EVP_MD_CTX_free(c->hs->md);
+    OPENSSL_free(c->hs->hello);
+    OPENSSL_clear_free(c->hs, sizeof *c->hs);
+    c->hs = NULL;
+}
+
+int64_t tlsg_accept(int64_t ctx) {
+    ERR_clear_error();
+    if (!ctx_retain(CTX(ctx))) return 0;
+    gconn *c = OPENSSL_zalloc(sizeof *c);
+    if (!c) {
+        ctx_release(CTX(ctx));
+        return 0;
+    }
+    c->ctx = CTX(ctx);
+    return HANDLE(c);
+}
+
+void tlsg_conn_free(int64_t h) {
+    gconn *c = CONN(h);
+    if (!c) return;
+    ctx_release(c->ctx);
+    q_free(&c->in);
+    if (c->plain.p) OPENSSL_cleanse(c->plain.p, c->plain.cap);
+    q_free(&c->plain);
+    q_free(&c->out);
+    dir_clear(&c->rd);
+    dir_clear(&c->wr);
+    hs_free(c);
+    OPENSSL_free(c->sni);
+    OPENSSL_free(c);
+}
+
+/* The context the connection holds now. */
+int64_t tlsg_conn_ctx(int64_t h) { return CONN(h) ? HANDLE(CONN(h)->ctx) : 0; }
+
+/* Moves the connection to another context: the connection takes a
+   reference to it and drops its old one. */
+uint8_t tlsg_conn_use(int64_t h, int64_t ctx) {
+    gconn *c = CONN(h);
+    if (!c || !ctx_retain(CTX(ctx))) return 0;
+    ctx_release(c->ctx);
+    c->ctx = CTX(ctx);
+    return 1;
+}
+
+static size_t state_size(const uint8_t *st, const uint8_t *last) {
+    size_t n = (size_t)(last - st) + 1;
+    if (last < st || n > STATE_CAP) abort();
+    return n;
+}
+
+void tlsg_load(int64_t h, uint8_t *st, const uint8_t *last) {
+    memcpy(st, CONN(h)->state, state_size(st, last));
+}
+
+void tlsg_store(int64_t h, const uint8_t *st, const uint8_t *last) {
+    memcpy(CONN(h)->state, st, state_size(st, last));
+}
+
+/* Appends data to the bytes fed: data.len, or -1 when the queue would pass
+   max bytes or the allocation fails, with nothing appended. */
+int64_t tlsg_feed(int64_t h, tls_bytes data, int64_t max) {
+    gconn *c = CONN(h);
+    if (!c || data.len < 0 || max < 0 || (uint64_t)max < c->in.len ||
+        (uint64_t)data.len > (uint64_t)max - c->in.len)
+        return -1;
+    if (data.len && !q_put(&c->in, data.data, (size_t)data.len)) return -1;
+    return data.len;
+}
+
+int64_t tlsg_in_len(int64_t h) { return (int64_t)CONN(h)->in.len; }
+
+/* Copies up to out.len of the bytes fed, from offset at, into out. */
+int64_t tlsg_in_peek(int64_t h, int64_t at, tls_buf out) {
+    queue *q = &CONN(h)->in;
+    if (at < 0 || out.len <= 0 || (size_t)at >= q->len) return 0;
+    size_t n = q->len - (size_t)at;
+    if (n > (size_t)out.len) n = (size_t)out.len;
+    memcpy(out.data, q->p + q->off + at, n);
+    return (int64_t)n;
+}
+
+void tlsg_in_skip(int64_t h, int64_t n) {
+    if (n > 0) q_drop(&CONN(h)->in, (size_t)n);
+}
+
+int64_t tlsg_pending(int64_t h) { return CONN(h) ? (int64_t)CONN(h)->out.len : 0; }
+
+int64_t tlsg_drain(int64_t h, tls_buf buf) {
+    gconn *c = CONN(h);
+    if (!c || buf.len <= 0) return 0;
+    size_t n = c->out.len < (size_t)buf.len ? c->out.len : (size_t)buf.len;
+    if (!n) return 0;
+    memcpy(buf.data, c->out.p + c->out.off, n);
+    q_drop(&c->out, n);
+    return (int64_t)n;
+}
+
+/* Appends bytes the server sends as they are: a plaintext record. */
+uint8_t tlsg_out_put(int64_t h, tls_bytes data) {
+    return data.len >= 0 && q_put(&CONN(h)->out, data.data, (size_t)data.len);
+}
+
+int64_t tlsg_plain_len(int64_t h) { return (int64_t)CONN(h)->plain.len; }
+
+/* Moves up to buf.len bytes of plaintext from the front into buf. */
+int64_t tlsg_plain_read(int64_t h, tls_buf buf) {
+    queue *q = &CONN(h)->plain;
+    if (buf.len <= 0 || !q->len) return 0;
+    size_t n = q->len < (size_t)buf.len ? q->len : (size_t)buf.len;
+    memcpy(buf.data, q->p + q->off, n);
+    q_drop(q, n);
+    return (int64_t)n;
+}
+
+/* Moves the last n bytes of plaintext, a record's content that isn't
+   application data, into buf, which must hold them. */
+int64_t tlsg_plain_pop(int64_t h, int64_t n, tls_buf buf) {
+    queue *q = &CONN(h)->plain;
+    if (n < 0 || (size_t)n > q->len || n > buf.len) return -1;
+    memcpy(buf.data, q->p + q->off + q->len - (size_t)n, (size_t)n);
+    q->len -= (size_t)n;
+    if (!q->len) q_free(q);
+    return n;
+}
+
+/* Discards the plaintext not yet read, after a failure. */
+void tlsg_plain_clear(int64_t h) {
+    queue *q = &CONN(h)->plain;
+    if (q->p) OPENSSL_cleanse(q->p, q->cap);
+    q_free(q);
+}
+
+void tlsg_set_sni(int64_t h, tls_bytes name) {
+    gconn *c = CONN(h);
+    OPENSSL_free(c->sni);
+    c->sni = NULL;
+    c->sni_len = 0;
+    if (name.len <= 0 || name.len > 255) return;
+    c->sni = OPENSSL_memdup(name.data, (size_t)name.len);
+    if (c->sni) c->sni_len = (uint8_t)name.len;
+}
+
+void tlsg_sni(int64_t h, gs_rref out) {
+    gconn *c = CONN(h);
+    if (c && c->sni_len) gs_bld_append(out, c->sni, c->sni_len);
+}
+
+/* ---- The handshake: transcript and secrets ---- */
+
+/* Starts the handshake's transcript and secrets once the suite is chosen. */
+uint8_t tlsg_hs_begin(int64_t h, int64_t suite) {
+    gconn *c = CONN(h);
+    const suite_t *s = suite_of(suite);
+    if (!s) return 0;
+    c->suite = s;
+    if (!c->hs) {
+        c->hs = OPENSSL_zalloc(sizeof *c->hs);
+        if (!c->hs) return 0;
+    }
+    if (!c->hs->md && !(c->hs->md = EVP_MD_CTX_new())) return 0;
+    return EVP_DigestInit_ex2(c->hs->md, s->md, NULL) == 1;
+}
+
+/* Frees the transcript, which the handshake no longer needs once the
+   server's Finished is sent. */
+void tlsg_hs_drop_transcript(int64_t h) {
+    gconn *c = CONN(h);
+    if (c->hs) {
+        EVP_MD_CTX_free(c->hs->md);
+        c->hs->md = NULL;
+        OPENSSL_free(c->hs->hello);
+        c->hs->hello = NULL;
+        c->hs->hello_len = 0;
+    }
+}
+
+/* Cleanses and frees everything the handshake held. */
+void tlsg_hs_end(int64_t h) { hs_free(CONN(h)); }
+
+uint8_t tlsg_tr_update(int64_t h, tls_bytes data) {
+    handshake *hs = CONN(h)->hs;
+    return hs && hs->md && data.len >= 0 && EVP_DigestUpdate(hs->md, data.data, (size_t)data.len) == 1;
+}
+
+/* The transcript's hash so far, into out: its length, or 0. */
+int64_t tlsg_tr_hash(int64_t h, tls_buf out) {
+    handshake *hs = CONN(h)->hs;
+    if (!hs || !hs->md || out.len < (int64_t)CONN(h)->suite->hash_len) return 0;
+    EVP_MD_CTX *copy = EVP_MD_CTX_new();
+    unsigned int n = 0;
+    int ok = copy && EVP_MD_CTX_copy_ex(copy, hs->md) == 1 && EVP_DigestFinal_ex(copy, out.data, &n) == 1;
+    EVP_MD_CTX_free(copy);
+    return ok ? (int64_t)n : 0;
+}
+
+/* After a HelloRetryRequest: the transcript becomes the message_hash
+   message of the first ClientHello's hash (RFC 8446, section 4.4.1). */
+uint8_t tlsg_tr_restart(int64_t h) {
+    gconn *c = CONN(h);
+    uint8_t m[4 + EVP_MAX_MD_SIZE];
+    tls_buf out = { m + 4, EVP_MAX_MD_SIZE };
+    int64_t n = tlsg_tr_hash(h, out);
+    if (!n) return 0;
+    m[0] = 254, m[1] = 0, m[2] = 0, m[3] = (uint8_t)n;
+    return EVP_DigestInit_ex2(c->hs->md, c->suite->md, NULL) == 1 &&
+           EVP_DigestUpdate(c->hs->md, m, 4 + (size_t)n) == 1;
+}
+
+/* Keeps the first ClientHello, which the second must repeat after a
+   HelloRetryRequest. */
+uint8_t tlsg_hello_keep(int64_t h, tls_bytes hello) {
+    handshake *hs = CONN(h)->hs;
+    if (!hs || hello.len <= 0) return 0;
+    OPENSSL_free(hs->hello);
+    hs->hello = OPENSSL_memdup(hello.data, (size_t)hello.len);
+    hs->hello_len = hs->hello ? (size_t)hello.len : 0;
+    return hs->hello != NULL;
+}
+
+void tlsg_hello_kept(int64_t h, gs_rref out) {
+    handshake *hs = CONN(h)->hs;
+    if (hs && hs->hello) gs_bld_append(out, hs->hello, (int64_t)hs->hello_len);
+}
+
+static int slot_ok(gconn *c, int64_t s) { return c->hs && s >= 0 && s < SLOTS; }
+
+/* RFC 8446, section 7.1: HKDF-Expand-Label(secret, label, context, n). */
+static int expand_label(const suite_t *s, const uint8_t *secret, size_t secret_len, const char *label,
+                        size_t label_len, const uint8_t *context, size_t context_len, uint8_t *out, size_t n) {
+    uint8_t info[2 + 1 + 255 + 1 + 255];
+    if (label_len > 249 || context_len > 255 || n > 0xffff) return 0;
+    size_t k = 0;
+    info[k++] = (uint8_t)(n >> 8);
+    info[k++] = (uint8_t)n;
+    info[k++] = (uint8_t)(6 + label_len);
+    memcpy(info + k, "tls13 ", 6);
+    k += 6;
+    memcpy(info + k, label, label_len);
+    k += label_len;
+    info[k++] = (uint8_t)context_len;
+    if (context_len) memcpy(info + k, context, context_len);
+    k += context_len;
+    int mode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char *)EVP_MD_get0_name(s->md), 0),
+        OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)secret, secret_len),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, info, k),
+        OSSL_PARAM_construct_end(),
+    };
+    EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(alg.hkdf);
+    int ok = kctx && EVP_KDF_derive(kctx, out, n, params) == 1;
+    EVP_KDF_CTX_free(kctx);
+    return ok;
+}
+
+/* slot[dst] = HKDF-Extract(salt, ikm), where -1 for either means Hash.length
+   zero bytes (RFC 8446, section 7.1). */
+uint8_t tlsg_ks_extract(int64_t h, int64_t dst, int64_t salt, int64_t ikm) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, dst) || (salt != -1 && !slot_ok(c, salt)) || (ikm != -1 && !slot_ok(c, ikm))) return 0;
+    handshake *hs = c->hs;
+    size_t hl = c->suite->hash_len;
+    static const uint8_t zeros[SLOT_CAP];
+    const uint8_t *sp = salt == -1 ? zeros : hs->slot[salt];
+    size_t sl = salt == -1 ? hl : hs->slot_len[salt];
+    const uint8_t *ip = ikm == -1 ? zeros : hs->slot[ikm];
+    size_t il = ikm == -1 ? hl : hs->slot_len[ikm];
+    int mode = EVP_KDF_HKDF_MODE_EXTRACT_ONLY;
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char *)EVP_MD_get0_name(c->suite->md), 0),
+        OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &mode),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void *)sp, sl),
+        OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)ip, il),
+        OSSL_PARAM_construct_end(),
+    };
+    uint8_t out[SLOT_CAP];
+    EVP_KDF_CTX *kctx = EVP_KDF_CTX_new(alg.hkdf);
+    int ok = kctx && EVP_KDF_derive(kctx, out, hl, params) == 1;
+    EVP_KDF_CTX_free(kctx);
+    if (ok) {
+        memcpy(hs->slot[dst], out, hl);
+        hs->slot_len[dst] = (uint8_t)hl;
+    }
+    OPENSSL_cleanse(out, sizeof out);
+    return (uint8_t)ok;
+}
+
+/* slot[dst] = HKDF-Expand-Label(slot[src], label, context, Hash.length):
+   Derive-Secret when context is a transcript hash. */
+uint8_t tlsg_ks_expand(int64_t h, int64_t dst, int64_t src, tls_bytes label, tls_bytes context) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, dst) || !slot_ok(c, src) || label.len < 0 || context.len < 0) return 0;
+    handshake *hs = c->hs;
+    size_t hl = c->suite->hash_len;
+    uint8_t out[SLOT_CAP];
+    int ok = expand_label(c->suite, hs->slot[src], hs->slot_len[src], (const char *)label.data,
+                          (size_t)label.len, context.data, (size_t)context.len, out, hl);
+    if (ok) {
+        memcpy(hs->slot[dst], out, hl);
+        hs->slot_len[dst] = (uint8_t)hl;
+    }
+    OPENSSL_cleanse(out, sizeof out);
+    return (uint8_t)ok;
+}
+
+/* slot[dst] = the Finished verify_data for the base key slot[src] over the
+   transcript hash (RFC 8446, section 4.4.4). */
+uint8_t tlsg_ks_finished(int64_t h, int64_t dst, int64_t src, tls_bytes hash) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, dst) || !slot_ok(c, src) || hash.len < 0) return 0;
+    handshake *hs = c->hs;
+    size_t hl = c->suite->hash_len, n = 0;
+    uint8_t key[SLOT_CAP], out[EVP_MAX_MD_SIZE];
+    int ok = expand_label(c->suite, hs->slot[src], hs->slot_len[src], "finished", 8, NULL, 0, key, hl) &&
+             EVP_Q_mac(NULL, "HMAC", NULL, EVP_MD_get0_name(c->suite->md), NULL, key, hl, hash.data,
+                       (size_t)hash.len, out, sizeof out, &n) != NULL &&
+             n == hl;
+    if (ok) {
+        memcpy(hs->slot[dst], out, hl);
+        hs->slot_len[dst] = (uint8_t)hl;
+    }
+    OPENSSL_cleanse(key, sizeof key);
+    OPENSSL_cleanse(out, sizeof out);
+    return (uint8_t)ok;
+}
+
+/* Copies a slot that is about to be sent, the server's verify_data. */
+void tlsg_ks_public(int64_t h, int64_t s, gs_rref out) {
+    gconn *c = CONN(h);
+    if (slot_ok(c, s)) gs_bld_append(out, c->hs->slot[s], c->hs->slot_len[s]);
+}
+
+/* Whether received equals slot[s], in constant time. */
+uint8_t tlsg_ks_check(int64_t h, int64_t s, tls_bytes received) {
+    gconn *c = CONN(h);
+    return slot_ok(c, s) && received.len == c->hs->slot_len[s] && c->hs->slot_len[s] > 0 &&
+           CRYPTO_memcmp(received.data, c->hs->slot[s], (size_t)received.len) == 0;
+}
+
+void tlsg_ks_wipe(int64_t h, int64_t s) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, s)) return;
+    OPENSSL_cleanse(c->hs->slot[s], SLOT_CAP);
+    c->hs->slot_len[s] = 0;
+}
+
+/* ---- Key exchange and signatures ---- */
+
+static int x25519_pair(EVP_PKEY **ours, uint8_t pub[32]) {
+    size_t n = 32;
+    *ours = EVP_PKEY_Q_keygen(NULL, NULL, "X25519");
+    return *ours && EVP_PKEY_get_raw_public_key(*ours, pub, &n) == 1 && n == 32;
+}
+
+static int derive(EVP_PKEY *ours, EVP_PKEY *peer, uint8_t *out, size_t want) {
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_pkey(NULL, ours, NULL);
+    size_t n = want;
+    int ok = ctx && EVP_PKEY_derive_init(ctx) == 1 && EVP_PKEY_derive_set_peer_ex(ctx, peer, 1) == 1 &&
+             EVP_PKEY_derive(ctx, out, &n) == 1 && n == want;
+    EVP_PKEY_CTX_free(ctx);
+    return ok;
+}
+
+/* X25519 with the client's 32-byte share: our share into pub, the secret
+   into ss. Rejects the all-zero secret (RFC 8446, section 7.4.2). */
+static int kx_x25519(const uint8_t *share, uint8_t pub[32], uint8_t ss[32]) {
+    EVP_PKEY *ours = NULL;
+    EVP_PKEY *peer = EVP_PKEY_new_raw_public_key_ex(NULL, "X25519", NULL, share, 32);
+    int ok = peer && x25519_pair(&ours, pub) && derive(ours, peer, ss, 32);
+    EVP_PKEY_free(ours);
+    EVP_PKEY_free(peer);
+    static const uint8_t zero[32];
+    return ok && CRYPTO_memcmp(ss, zero, 32) != 0;
+}
+
+/* ECDHE on a NIST curve with the client's uncompressed point: our point
+   into pub, the x-coordinate into ss. Importing the point checks that it is
+   on the curve. */
+static int kx_ec(const char *curve, size_t field, const uint8_t *share, size_t share_len, uint8_t *pub,
+                 uint8_t *ss) {
+    if (share_len != 1 + 2 * field || share[0] != 4) return 0;
+    EVP_PKEY *ours = EVP_PKEY_Q_keygen(NULL, NULL, "EC", curve), *peer = NULL;
+    EVP_PKEY_CTX *pctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char *)curve, 0),
+        OSSL_PARAM_construct_octet_string(OSSL_PKEY_PARAM_PUB_KEY, (void *)share, share_len),
+        OSSL_PARAM_construct_end(),
+    };
+    size_t n = 0;
+    int ok = ours && pctx && EVP_PKEY_fromdata_init(pctx) == 1 &&
+             EVP_PKEY_fromdata(pctx, &peer, EVP_PKEY_PUBLIC_KEY, params) == 1 &&
+             EVP_PKEY_get_octet_string_param(ours, OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, pub, share_len, &n) == 1 &&
+             n == share_len && derive(ours, peer, ss, field);
+    EVP_PKEY_CTX_free(pctx);
+    EVP_PKEY_free(ours);
+    EVP_PKEY_free(peer);
+    return ok;
+}
+
+/* X25519MLKEM768 (RFC 10024): the client's share is ML-KEM-768's
+   encapsulation key then X25519's share; ours is the ciphertext then our
+   X25519 share; the secret is ML-KEM's then X25519's. The server only
+   encapsulates: it makes no ML-KEM key of its own. */
+static int kx_hybrid(const uint8_t *share, uint8_t *pub, uint8_t ss[64]) {
+    EVP_PKEY *ek = EVP_PKEY_new_raw_public_key_ex(NULL, "ML-KEM-768", NULL, share, MLKEM768_EK);
+    EVP_PKEY_CTX *ctx = ek ? EVP_PKEY_CTX_new_from_pkey(NULL, ek, NULL) : NULL;
+    size_t ct = MLKEM768_CT, sl = 32;
+    int ok = ctx && EVP_PKEY_encapsulate_init(ctx, NULL) == 1 &&
+             EVP_PKEY_encapsulate(ctx, pub, &ct, ss, &sl) == 1 && ct == MLKEM768_CT && sl == 32;
+    EVP_PKEY_CTX_free(ctx);
+    EVP_PKEY_free(ek);
+    return ok && kx_x25519(share + MLKEM768_EK, pub + MLKEM768_CT, ss + 32);
+}
+
+/* The server's side of the key exchange for group with the client's share:
+   our share appended to out, the shared secret into slot[dst]. 0 when the
+   share is malformed or invalid, or the provider lacks the group. */
+uint8_t tlsg_kx(int64_t h, int64_t group, tls_bytes share, gs_rref out, int64_t dst) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, dst) || share.len <= 0) return 0;
+    uint8_t pub[MLKEM768_CT + 32], ss[64];
+    size_t pub_len = 0, ss_len = 0;
+    int ok = 0;
+    switch (group) {
+    case GROUP_X25519:
+        ok = share.len == 32 && kx_x25519(share.data, pub, ss);
+        pub_len = ss_len = 32;
+        break;
+    case GROUP_P256:
+        ok = kx_ec("P-256", 32, share.data, (size_t)share.len, pub, ss);
+        pub_len = 65, ss_len = 32;
+        break;
+    case GROUP_P384:
+        ok = kx_ec("P-384", 48, share.data, (size_t)share.len, pub, ss);
+        pub_len = 97, ss_len = 48;
+        break;
+    case GROUP_X25519MLKEM768:
+        ok = alg.mlkem && share.len == MLKEM768_EK + 32 && kx_hybrid(share.data, pub, ss);
+        pub_len = MLKEM768_CT + 32, ss_len = 64;
+        break;
+    }
+    if (ok) {
+        memcpy(c->hs->slot[dst], ss, ss_len);
+        c->hs->slot_len[dst] = (uint8_t)ss_len;
+        gs_bld_append(out, pub, (int64_t)pub_len);
+    }
+    OPENSSL_cleanse(ss, sizeof ss);
+    return (uint8_t)ok;
+}
+
+/* Signs content with the context's key in its scheme, appending the
+   signature as TLS carries it: DER for ECDSA. */
+uint8_t tlsg_sign(int64_t h, tls_bytes content, gs_rref out) {
+    gconn *c = CONN(h);
+    EVP_MD_CTX *m = EVP_MD_CTX_new();
+    EVP_PKEY_CTX *p = NULL;
+    uint8_t sig[1024];
+    size_t n = sizeof sig;
+    int pss = c->ctx->scheme == SCHEME_RSA_PSS_RSAE_SHA256;
+    if (pss && (size_t)EVP_PKEY_get_size(c->ctx->key) > sizeof sig) {
+        EVP_MD_CTX_free(m);
+        return 0;
+    }
+    int ok = m && EVP_DigestSignInit_ex(m, &p, "SHA256", NULL, NULL, c->ctx->key, NULL) == 1 &&
+             (!pss || (EVP_PKEY_CTX_set_rsa_padding(p, RSA_PKCS1_PSS_PADDING) == 1 &&
+                       EVP_PKEY_CTX_set_rsa_pss_saltlen(p, RSA_PSS_SALTLEN_DIGEST) == 1)) &&
+             EVP_DigestSign(m, sig, &n, content.data, (size_t)content.len) == 1;
+    EVP_MD_CTX_free(m);
+    if (ok) gs_bld_append(out, sig, (int64_t)n);
+    return (uint8_t)ok;
+}
+
+uint8_t tlsg_random(tls_buf out) { return out.len >= 0 && RAND_bytes(out.data, (int)out.len) == 1; }
+
+/* ---- Records ---- */
+
+#define DIR_READ 0
+#define DIR_WRITE 1
+
+static direction *dir_of(gconn *c, int64_t d) { return d == DIR_READ ? &c->rd : &c->wr; }
+
+static int dir_keys(gconn *c, direction *d, int enc) {
+    const suite_t *s = c->suite;
+    uint8_t key[32];
+    int ok = expand_label(s, d->secret, s->hash_len, "key", 3, NULL, 0, key, s->key_len) &&
+             expand_label(s, d->secret, s->hash_len, "iv", 2, NULL, 0, d->iv, 12);
+    if (ok && !d->c) ok = (d->c = EVP_CIPHER_CTX_new()) != NULL;
+    ok = ok && EVP_CipherInit_ex2(d->c, s->cipher, key, NULL, enc, NULL) == 1;
+    OPENSSL_cleanse(key, sizeof key);
+    d->seq = 0;
+    return ok;
+}
+
+/* Gives a direction the traffic secret in slot[s], and its key and IV. */
+uint8_t tlsg_rec_keys(int64_t h, int64_t d, int64_t s) {
+    gconn *c = CONN(h);
+    if (!slot_ok(c, s) || c->hs->slot_len[s] != c->suite->hash_len) return 0;
+    direction *dir = dir_of(c, d);
+    memcpy(dir->secret, c->hs->slot[s], c->suite->hash_len);
+    return (uint8_t)dir_keys(c, dir, d == DIR_WRITE);
+}
+
+/* A KeyUpdate: the direction's next secret (RFC 8446, section 7.2), and its
+   key and IV. */
+uint8_t tlsg_rec_update(int64_t h, int64_t d) {
+    gconn *c = CONN(h);
+    direction *dir = dir_of(c, d);
+    size_t hl = c->suite->hash_len;
+    uint8_t next[48];
+    int ok = dir->c && expand_label(c->suite, dir->secret, hl, "traffic upd", 11, NULL, 0, next, hl);
+    if (ok) memcpy(dir->secret, next, hl);
+    OPENSSL_cleanse(next, sizeof next);
+    return ok && dir_keys(c, dir, d == DIR_WRITE);
+}
+
+static void nonce(const direction *d, uint8_t out[12]) {
+    memcpy(out, d->iv, 12);
+    for (int i = 0; i < 8; i++) out[11 - i] ^= (uint8_t)(d->seq >> (8 * i));
+}
+
+/* Encrypts data as one record of the inner type kind and appends it: the
+   direction's sequence number after it, or -1. data is at most 2^14 bytes,
+   which Goose checks. */
+int64_t tlsg_rec_seal(int64_t h, int64_t kind, tls_bytes data) {
+    gconn *c = CONN(h);
+    direction *d = &c->wr;
+    if (!d->c || data.len < 0 || data.len > 16384 || d->seq == UINT64_MAX) return -1;
+    size_t n = (size_t)data.len, len = n + 1 + 16;
+    uint8_t *p = q_room(&c->out, 5 + len);
+    if (!p) return -1;
+    p[0] = 23, p[1] = 3, p[2] = 3, p[3] = (uint8_t)(len >> 8), p[4] = (uint8_t)len;
+    uint8_t iv[12], type = (uint8_t)kind;
+    nonce(d, iv);
+    int a = 0, b = 0, f = 0;
+    int ok = EVP_CipherInit_ex2(d->c, NULL, NULL, iv, 1, NULL) == 1 &&
+             EVP_EncryptUpdate(d->c, NULL, &a, p, 5) == 1 &&
+             (n == 0 || EVP_EncryptUpdate(d->c, p + 5, &a, data.data, (int)n) == 1) &&
+             EVP_EncryptUpdate(d->c, p + 5 + n, &b, &type, 1) == 1 &&
+             EVP_EncryptFinal_ex(d->c, p + 5 + n + 1, &f) == 1 &&
+             EVP_CIPHER_CTX_ctrl(d->c, EVP_CTRL_AEAD_GET_TAG, 16, p + 5 + n + 1) == 1;
+    if (!ok) return -1;
+    c->out.len += 5 + len;
+    d->seq++;
+    return (int64_t)d->seq;
+}
+
+/* Decrypts the record at the front of the bytes fed, whose header Goose has
+   checked and whose len bytes have all arrived, and drops it from them. The
+   content goes at the end of the plaintext only once its tag verifies, and
+   the result is its inner type << 32 | its length; or -1 for a record that
+   fails to decrypt, which leaves the bytes fed as they were, -2 for one with
+   no inner type, or -3 for one whose TLSInnerPlaintext passes 2^14 + 1
+   bytes (RFC 8446, section 5.4). */
+int64_t tlsg_rec_open(int64_t h, int64_t len) {
+    gconn *c = CONN(h);
+    direction *d = &c->rd;
+    if (!d->c || len < 17 || (size_t)len + 5 > c->in.len || d->seq == UINT64_MAX) return -1;
+    size_t n = (size_t)len - 16;
+    uint8_t *p = q_room(&c->plain, n);
+    if (!p) return -1;
+    const uint8_t *hdr = c->in.p + c->in.off;
+    uint8_t iv[12];
+    nonce(d, iv);
+    int a = 0, f = 0;
+    int ok = EVP_CipherInit_ex2(d->c, NULL, NULL, iv, 0, NULL) == 1 &&
+             EVP_DecryptUpdate(d->c, NULL, &a, hdr, 5) == 1 &&
+             EVP_DecryptUpdate(d->c, p, &a, hdr + 5, (int)n) == 1 &&
+             EVP_CIPHER_CTX_ctrl(d->c, EVP_CTRL_AEAD_SET_TAG, 16, (void *)(hdr + 5 + n)) == 1 &&
+             EVP_DecryptFinal_ex(d->c, p + a, &f) == 1;
+    if (!ok) {
+        OPENSSL_cleanse(p, n);
+        if (!c->plain.len) q_free(&c->plain);
+        return -1;
+    }
+    d->seq++;
+    q_drop(&c->in, 5 + (size_t)len);
+    size_t k = n;
+    while (k > 0 && p[k - 1] == 0) k--;
+    if (k == 0 || n > 16385) {
+        OPENSSL_cleanse(p, n);
+        if (!c->plain.len) q_free(&c->plain);
+        return k == 0 ? -2 : -3;
+    }
+    uint8_t type = p[k - 1];
+    c->plain.len += k - 1;
+    if (!c->plain.len) q_free(&c->plain);
+    return (int64_t)type << 32 | (int64_t)(k - 1);
+}
+
+/* The sequence number a direction is at. */
+int64_t tlsg_rec_seq(int64_t h, int64_t d) { return (int64_t)dir_of(CONN(h), d)->seq; }
+
+/* ---- Failures ---- */
+
+/* Raises a failure on this thread's OpenSSL error queue, for
+   tls::error_text: one of libssl's reasons, so that its text is OpenSSL's,
+   and what the server adds. */
+void tlsg_fail(int64_t reason, tls_bytes text) {
+    if (reason < 0) reason = ERR_R_INTERNAL_ERROR;
+    if (text.len > 0)
+        ERR_raise_data(ERR_LIB_SSL, (int)reason, "%.*s", (int)(text.len > 200 ? 200 : text.len),
+                       (const char *)text.data);
+    else
+        ERR_raise(ERR_LIB_SSL, (int)reason);
+}
+
+void tlsg_clear_errors(void) { ERR_clear_error(); }
+
+/* Which server new contexts are: 1 for libssl's, chosen when the package's
+   C is configured (CMakeLists.txt, GOOSE_TLS_SERVER), else 0 for Goose's. */
+int64_t tlsg_backend(void) {
+#ifdef GOOSE_TLS_SERVER_OPENSSL
+    return 1;
+#else
+    return 0;
+#endif
+}

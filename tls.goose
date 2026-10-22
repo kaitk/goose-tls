@@ -1,9 +1,12 @@
-// TLS for a server and a client, over OpenSSL (shim/tls.c), and the keys and
-// certificates an ACME client needs (shim/crypto.c). The package does no I/O:
-// the program reads from its socket and feeds the bytes to a connection, and
-// sends what it drains from it. The byte flow and its states are in
-// docs/architecture.md. On Linux, a connection can move to the kernel after its
-// handshake (to_kernel), which only sets the socket's options.
+// TLS for a server and a client, and the keys and certificates an ACME client
+// needs (shim/crypto.c). A server's connections run the TLS 1.3 server in
+// server.goose, over libcrypto (shim/server.c), or, when the package's C was
+// configured for it, libssl's (shim/tls.c), as a client's always do. The
+// package does no I/O: the program reads from its socket and feeds the bytes
+// to a connection, and sends what it drains from it. The byte flow and its
+// states are in docs/architecture.md. On Linux, a libssl connection can move
+// to the kernel after its handshake (to_kernel), which only sets the socket's
+// options.
 //
 //   let ctx, ok = tls::server_files("server.crt", "server.key", ["http/1.1"]);
 //   let c = tls::accept(ctx);                 // for each accepted socket
@@ -12,16 +15,22 @@
 //   tls::write(c, response);
 //   let m = tls::drain(c, out);               // bytes for the socket
 //
-// A Context, a Conn, and a Key are handles to OpenSSL's objects: flat, so they
+// A Context, a Conn, and a Key are handles to objects in C: flat, so they
 // cross queues and thread_spawn, and freed only by tls::free. Free each once
-// and don't use it after: the handle is the object's address. A Context is
-// safe to use from several threads at once, and share gives each thread a
-// reference of its own to free; a Conn or a Key is used from one thread at a
-// time.
+// and don't use it after: the handle is the object's address, with bit 0 set
+// for the Goose server's. A Context is safe to use from several threads at
+// once, and share gives each thread a reference of its own to free; a Conn or
+// a Key is used from one thread at a time.
 namespace tls;
 
 import std;
 import os;
+import .wire;
+import .hello;
+import .server;
+
+// Whether a handle is the Goose server's rather than libssl's.
+fn ours(id: i64) -> bool { (id & 1) != 0 }
 
 // A server's or a client's configuration: for a server, the certificate chain
 // and key; for a client, the certificates it trusts; and the protocol
@@ -131,17 +140,27 @@ fn wire(items: const u8[:][:], max: i64, out: u8[>..]&) -> bool {
 
 // A server context from PEM text: chain holds the leaf certificate, then any
 // intermediates; key the leaf's private key. protocols are the ALPN names the
-// server speaks, in its order of preference; a client that offers none of
-// them gets no ALPN answer, and one that offers no ALPN still connects.
-// TLS 1.3 only, with TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, and
+// server speaks, in its order of preference; a client that offers ALPN but
+// none of them fails with no_application_protocol (RFC 7301, section 3.2),
+// and one that offers no ALPN still connects. TLS 1.3 only, with
+// TLS_AES_128_GCM_SHA256, TLS_AES_256_GCM_SHA384, and
 // TLS_CHACHA20_POLY1305_SHA256, chosen in that order. False when the PEM
-// doesn't parse, the key doesn't match the leaf, or a protocol name is empty
-// or longer than 255 bytes; error_text says which.
+// doesn't parse, the key doesn't match the leaf, the key is neither EC P-256
+// nor RSA of 2048 bits or more, or a protocol name is empty or longer than
+// 255 bytes; error_text says which.
 fn server(chain: const u8[:], key: const u8[:], protocols: const u8[:][:]) -> Context, bool {
     var alpn: u8[>..] = [];
     guard wire(protocols, 255, alpn) else { return Context { .. }, false; }
-    let id = server_new_c(chain, key, alpn);
-    return Context { id: id }, id != 0;
+    if g_backend() == 1 {
+        let id = server_new_c(chain, key, alpn);
+        return Context { id: id }, id != 0;
+    }
+    let id = g_ctx_new(chain, key);
+    guard id != 0 && g_ctx_set_alpn(id, alpn) else {
+        g_ctx_free(id);
+        return Context { .. }, false;
+    }
+    return Context { id: id }, true;
 }
 
 // A client context that trusts the system's certificate authorities:
@@ -169,16 +188,22 @@ fn client_trusting(ca: const u8[:], protocols: const u8[:][:]) -> Context, bool 
 // free(ctx) on its own: for each thread that keeps the context, so that
 // whichever frees last frees it. Atomic, so any thread can share or free while
 // others accept from it. Not ok when ctx isn't.
-fn share(ctx: Context) -> Context { Context { id: share_c(ctx.id) } }
+fn share(ctx: Context) -> Context {
+    Context { id: if ours(ctx.id) { g_ctx_share(ctx.id) } else { share_c(ctx.id) } }
+}
 
 // Sets the key exchange groups the connections of ctx offer or accept, in
 // order of preference: OpenSSL's names joined by ':', such as
-// "X25519:P-256:P-384". Without it a context takes OpenSSL's default, which
-// from OpenSSL 3.5 puts X25519MLKEM768 first: a hybrid that also protects the
-// keys against a later quantum computer, at about 6 KB more per connection.
-// False, with ctx unchanged, when OpenSSL doesn't know a name. Call it
-// before ctx accepts or connects.
-fn use_groups(ctx: Context, names: const u8[:]) -> bool { use_groups_c(ctx.id, names) }
+// "X25519:P-256:P-384". Without it a server context takes X25519MLKEM768
+// where libcrypto has it (OpenSSL 3.5 or later), X25519, and P-256, and a
+// client context, or libssl's server, OpenSSL's default, which from 3.5 puts
+// X25519MLKEM768 first too: a hybrid that also protects the keys against a
+// later quantum computer. False, with ctx unchanged, when a name is unknown.
+// Call it before ctx accepts or connects.
+fn use_groups(ctx: Context, names: const u8[:]) -> bool {
+    if ours(ctx.id) { return s_use_groups(ctx.id, names); }
+    return use_groups_c(ctx.id, names);
+}
 
 // server, with the chain and key read from PEM files. False also when a file
 // can't be read.
@@ -191,19 +216,29 @@ fn server_files(chain_path: const u8[:], key_path: const u8[:], protocols: const
 }
 
 // A new server connection, before its handshake; check ok(c).
-fn accept(ctx: Context) -> Conn { Conn { id: accept_c(ctx.id) } }
+fn accept(ctx: Context) -> Conn {
+    Conn { id: if ours(ctx.id) { s_accept(ctx.id) } else { accept_c(ctx.id) } }
+}
 
 // A new client connection from a client context to host, a DNS name or an IP
 // address, before its handshake; check ok(c). The server's certificate must
 // name host, and a DNS name is sent in SNI. The client speaks first: call
 // handshake and drain before feeding anything.
-fn connect(ctx: Context, host: const u8[:]) -> Conn { Conn { id: connect_c(ctx.id, host) } }
+fn connect(ctx: Context, host: const u8[:]) -> Conn {
+    guard !ours(ctx.id) else { return Conn { .. }; }
+    return Conn { id: connect_c(ctx.id, host) };
+}
 
 fn ok(ctx: Context) -> bool { ctx.id != 0 }
 fn ok(c: Conn) -> bool { c.id != 0 }
 
-fn free(ctx: Context) { context_free_c(ctx.id); }
-fn free(c: Conn) { conn_free_c(c.id); }
+fn free(ctx: Context) {
+    if ours(ctx.id) { g_ctx_free(ctx.id); } else { context_free_c(ctx.id); }
+}
+
+fn free(c: Conn) {
+    if ours(c.id) { g_conn_free(c.id); } else { conn_free_c(c.id); }
+}
 
 // A context chosen per connection (docs/architecture.md, "A context per
 // connection").
@@ -211,18 +246,26 @@ fn free(c: Conn) { conn_free_c(c.id); }
 // Makes each handshake of the connections ctx accepts from now on pause after
 // the ClientHello, where handshake and read return HELLO. Call it before ctx
 // accepts its first connection. False when ctx isn't.
-fn choose_context(ctx: Context) -> bool { choose_enable_c(ctx.id) }
+fn choose_context(ctx: Context) -> bool {
+    guard ours(ctx.id) else { return choose_enable_c(ctx.id); }
+    g_ctx_set_choose(ctx.id);
+    return true;
+}
 
 // Moves a connection paused at HELLO to ctx, another server context, whose
 // certificate, key, and ALPN protocols it then answers with; the next
 // handshake call goes on from there. The connection holds its own reference
 // to ctx. False when the connection isn't paused at HELLO.
-fn use_context(c: Conn, ctx: Context) -> bool { use_context_c(c.id, ctx.id) }
+fn use_context(c: Conn, ctx: Context) -> bool {
+    guard ours(c.id) == ours(ctx.id) else { return false; }
+    if ours(c.id) { return s_use_context(c.id, ctx.id); }
+    return use_context_c(c.id, ctx.id);
+}
 
 // The host name the client sent in SNI, or "" for none.
 fn server_name(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    server_name_c(c.id, s);
+    if ours(c.id) { g_sni(c.id, s); } else { server_name_c(c.id, s); }
     return s;
 }
 
@@ -231,7 +274,7 @@ fn server_name(c: Conn) -> u8[>..] {
 // when the connection's context isn't one choose_context was given.
 fn protocols_offered(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    offered_c(c.id, s);
+    if ours(c.id) { s_offered(c.id, s); } else { offered_c(c.id, s); }
     return s;
 }
 
@@ -253,51 +296,72 @@ fn offers(c: Conn, protocol: const u8[:]) -> bool {
 // there is none, such as from a client that sent none.
 fn peer_certificate(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    peer_certificate_c(c.id, s);
+    if !ours(c.id) { peer_certificate_c(c.id, s); }
     return s;
 }
 
 // Hands the connection bytes the socket received. Takes all of them: returns
 // data.len, or FAILED.
-fn feed(c: Conn, data: const u8[:]) -> i64 { feed_c(c.id, data) }
+fn feed(c: Conn, data: const u8[:]) -> i64 {
+    if ours(c.id) { return s_feed(c.id, data); }
+    return feed_c(c.id, data);
+}
 
 // How many bytes wait for drain.
-fn pending(c: Conn) -> i64 { pending_c(c.id) }
+fn pending(c: Conn) -> i64 {
+    if ours(c.id) { return g_pending(c.id); }
+    return pending_c(c.id);
+}
 
 // Moves up to buf.len of the bytes waiting to be sent into buf, and returns
 // how many. A handshake, a write, a shutdown, or a failure can leave bytes
 // waiting; drain until it returns 0.
-fn drain(c: Conn, buf: u8[:]) -> i64 { drain_c(c.id, buf) }
+fn drain(c: Conn, buf: u8[:]) -> i64 {
+    if ours(c.id) { return g_drain(c.id, buf); }
+    return drain_c(c.id, buf);
+}
 
 // Advances the handshake with what was fed: 0 once it is done, else
 // WANT_INPUT, HELLO, or FAILED. A read finishes the handshake too; this is
 // for a program that wants the ALPN protocol before the first byte of
 // plaintext. A client calls it first, to make its ClientHello.
-fn handshake(c: Conn) -> i64 { handshake_c(c.id) }
+fn handshake(c: Conn) -> i64 {
+    if ours(c.id) { return s_handshake(c.id); }
+    return handshake_c(c.id);
+}
 
 // Decrypts what was fed into buf: the count, more than 0, or WANT_INPUT,
 // CLOSED, or FAILED. Call it until it returns WANT_INPUT: one call reads at
 // most one record.
-fn read(c: Conn, buf: u8[:]) -> i64 { read_c(c.id, buf) }
+fn read(c: Conn, buf: u8[:]) -> i64 {
+    if ours(c.id) { return s_read(c.id, buf); }
+    return read_c(c.id, buf);
+}
 
 // Encrypts all of data into bytes waiting for drain: data.len, or WANT_INPUT
 // before the handshake is done, or FAILED.
-fn write(c: Conn, data: const u8[:]) -> i64 { write_c(c.id, data) }
+fn write(c: Conn, data: const u8[:]) -> i64 {
+    if ours(c.id) { return s_write(c.id, data); }
+    return write_c(c.id, data);
+}
 
 // Queues close_notify for drain: 0, or FAILED.
-fn shutdown(c: Conn) -> i64 { shutdown_c(c.id) }
+fn shutdown(c: Conn) -> i64 {
+    if ours(c.id) { return s_shutdown(c.id); }
+    return shutdown_c(c.id);
+}
 
 // The protocol ALPN chose, or "" for none.
 fn alpn(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    alpn_c(c.id, s);
+    if ours(c.id) { s_alpn(c.id, s); } else { alpn_c(c.id, s); }
     return s;
 }
 
 // The version once the handshake is done, "TLSv1.3"; "" before.
 fn version(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    version_c(c.id, s);
+    if ours(c.id) { s_version(c.id, s); } else { version_c(c.id, s); }
     return s;
 }
 
@@ -305,7 +369,7 @@ fn version(c: Conn) -> u8[>..] {
 // "TLS_AES_128_GCM_SHA256"; "" before.
 fn cipher(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    cipher_c(c.id, s);
+    if ours(c.id) { s_cipher(c.id, s); } else { cipher_c(c.id, s); }
     return s;
 }
 
@@ -313,7 +377,7 @@ fn cipher(c: Conn) -> u8[>..] {
 // such as "X25519MLKEM768", "x25519", or "secp256r1"; "" before.
 fn group(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];
-    group_c(c.id, s);
+    if ours(c.id) { s_group(c.id, s); } else { group_c(c.id, s); }
     return s;
 }
 
@@ -343,7 +407,7 @@ fn kernel_supported() -> bool { kernel_supported_c() }
 // Makes the connections ctx accepts from now on ready to move to the kernel:
 // true, or false where the kernel has no kTLS, and then nothing changes.
 // Call it before ctx accepts its first connection.
-fn use_kernel(ctx: Context) -> bool { kernel_enable_c(ctx.id, false) }
+fn use_kernel(ctx: Context) -> bool { !ours(ctx.id) && kernel_enable_c(ctx.id, false) }
 
 // Moves the connection to the kernel on socket fd, once the handshake is
 // done: which directions the kernel took, KERNEL_RX | KERNEL_TX, KERNEL_RX
@@ -357,16 +421,16 @@ fn use_kernel(ctx: Context) -> bool { kernel_enable_c(ctx.id, false) }
 //
 // Everything drained before must be on the socket before the program sends
 // through the kernel. A connection whose context didn't use_kernel gets 0.
-fn to_kernel(c: Conn, fd: i64) -> i64 { kernel_start_c(c.id, fd) }
+fn to_kernel(c: Conn, fd: i64) -> i64 { if ours(c.id) { 0 } else { kernel_start_c(c.id, fd) } }
 
 // How many bytes complete the record the bytes fed end in, after to_kernel
 // gave WANT_INPUT.
-fn kernel_wants(c: Conn) -> i64 { kernel_wants_c(c.id) }
+fn kernel_wants(c: Conn) -> i64 { if ours(c.id) { 0 } else { kernel_wants_c(c.id) } }
 
 // Which directions the kernel holds, as to_kernel last reported them. Once
 // it holds receiving, feed and read fail; once it holds sending, write and
 // shutdown fail.
-fn in_kernel(c: Conn) -> i64 { kernel_owned_c(c.id) }
+fn in_kernel(c: Conn) -> i64 { if ours(c.id) { 0 } else { kernel_owned_c(c.id) } }
 
 // Takes a record that isn't data, which the kernel received on fd: its type,
 // from recvmsg's TLS_GET_RECORD_TYPE, and its plaintext. Returns 0 when the
@@ -377,12 +441,13 @@ fn in_kernel(c: Conn) -> i64 { kernel_owned_c(c.id) }
 // 6.14). With sending still in user space, it queues the answer to a
 // KeyUpdate for drain, and returns 0.
 fn kernel_record(c: Conn, fd: i64, kind: i64, body: const u8[:]) -> i64 {
-    kernel_record_c(c.id, fd, kind, body)
+    if ours(c.id) { return FAILED; }
+    return kernel_record_c(c.id, fd, kind, body);
 }
 
 // Moves the kernel's sending on fd to the next keys, right after the program
 // sent KEY_UPDATE through it: 0, or FAILED.
-fn kernel_update_tx(c: Conn, fd: i64) -> i64 { kernel_update_tx_c(c.id, fd) }
+fn kernel_update_tx(c: Conn, fd: i64) -> i64 { if ours(c.id) { FAILED } else { kernel_update_tx_c(c.id, fd) } }
 
 // Keys and certificates for an ACME client, which then needs no C of its own
 // (docs/architecture.md, "Keys and certificates"). names, in csr and
