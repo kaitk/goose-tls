@@ -198,3 +198,10 @@ WSL runs the tests on a checkout under `/mnt/c`. A worktree that Windows' git ma
 a Windows path in its `.git` file, which WSL's git can't follow ("not a git
 repository"); the tests don't need git, but `spikes/02-goose-server/run.sh` reads the
 commit from it, so give it `COMMIT` there (2026-10-22).
+
+From Git Bash, `wsl.exe -- CMD` hands CMD to a shell inside WSL, which expands its `$`
+variables before CMD runs, and Git Bash rewrites arguments that look like paths. Put
+the commands in a script and run it with `MSYS_NO_PATHCONV=1 wsl.exe -e sh SCRIPT`.
+Run the repository's scripts by path: `. scripts/goose.sh` inside `sh -c` takes the
+root from `$0` and downloads the compiler into the parent directory's `build/`
+(2026-10-22).
