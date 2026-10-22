@@ -45,16 +45,16 @@ for the latest measurements.
 
 ## Order
 
-Task 001, server TLS, is done: goose-http's HTTP/1.1 over TLS (its task 014) and
-HttpArena's TLS profiles (goose-rest's task 047) build on it. Task 002, kTLS, was
-cancelled and its code removed (2026-10-22, task 007). Task 003, done, added the hooks an outside ACME
-package needs (goose-rest's task 049): a certificate per connection, a certificate
-swapped while running, client TLS, and the crypto for ACME. Task 004 frees a
-connection's memory BIO buffers once they're empty (goose-http's task 058); a release
-with it is open. Task 005, done, measured rustls against OpenSSL (spike 01): rustls
-used under a third of the memory per connection, and less CPU. Task 006, a Rust library
-over rustls, was cancelled on 2026-10-22. Task 007 replaces it: a TLS 1.3 server in
-Goose over libcrypto, with session tickets, kTLS removed, and OpenSSL kept as a
-build-time alternative. Its spike (02) passed; the server and its tickets are released
-in `v0.0.4`, and goose-http's client check and network benchmarks remain.
+Open: task 007, a TLS 1.3 server in Goose over libcrypto, with session tickets, kTLS
+removed, and OpenSSL kept as a build-time alternative. The server and its tickets are
+released in `v0.0.4`, which goose-http's pin took, and its overhead cut is on `main`;
+goose-http's client check, the network benchmarks, and a resumption fuzz target remain.
+
+Archived: task 001, server TLS, done, which goose-http's HTTP/1.1 over TLS (its task
+014) and HttpArena's TLS profiles (goose-rest's task 047) build on. Task 002, kTLS,
+cancelled, its code removed by task 007. Task 003, done: the hooks an outside ACME
+package needs (goose-rest's task 049). Task 004, done: a connection's memory BIO
+buffers freed once empty (goose-http's task 058), released in `v0.0.4`. Task 005, done:
+rustls measured against OpenSSL (spike 01). Task 006, a Rust library over rustls,
+cancelled on 2026-10-22: rustls won't be used.
 

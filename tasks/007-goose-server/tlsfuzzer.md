@@ -42,6 +42,17 @@ With session tickets, at `d0e859a`, the same day and setup:
 | connection-abort | 150 | 0 | |
 | psk_dhe_ke, psk_ke | 0 | 6 | External PSKs, configured out of band, which the server doesn't take. Unable to use the PSK, it needs signature_algorithms to authenticate, which these ClientHellos omit, so it sends `missing_extension` (RFC 8446, section 9.2) |
 
+Run again 2026-10-22 at `36b4b9b` (the server's overhead cut), the same setup and
+checkouts, with python-ecdsa `bff40c6` and six `c8e3940`: every count as above but for
+three scripts. signature-algorithms (101 and 1) and version-negotiation (6 and 196)
+sample their probes at random, as on macOS; symetric-ciphers passed 74 and failed 28,
+all CCM. keyupdate fails intermittently: one probe in 2 of 5 runs, a different one each
+time ("multiple KeyUpdate messages", where an application data record came before the
+expected KeyUpdate; or an "invalid message_type" probe, whose connection was reset
+before its NewSessionTicket arrived). `main` before the overhead cut (`68e7364`) does
+the same, failing 1 to 3 probes in 3 of 5 runs, so it isn't this change's; its cause,
+whether in the server or in the echo server's sockets, is still to find.
+
 Not run: non-support (servers without TLS 1.3), post-handshake-auth,
 certificate-request, certificate-compression and client-certificate-compression,
 ffdhe-*, eddsa, mldsa, ecdsa-* (an ECDSA certificate run is still to do), minerva,

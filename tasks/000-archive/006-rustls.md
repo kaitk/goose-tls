@@ -1,6 +1,7 @@
 # 006: Connections over rustls
 
-Status: cancelled (2026-10-22). The package takes no Rust dependency in its build;
+Status: cancelled (2026-10-22), and archived the same day: the maintainer confirmed
+that rustls won't be used. The package takes no Rust dependency in its build;
 task 007 writes the server in Goose over libcrypto instead. The library started on the
 branch `rustls-lib` was never merged or pushed, and is left as it is. What follows is
 the design as it stood, kept for its map of rustls's API, which task 007 reads as a
@@ -11,7 +12,7 @@ static library with the C ABI the shim has today, so that `tls.goose` changes as
 as possible. The reason is memory: OpenSSL holds about 30 KB a connection with no
 setting that reduces it, and goose-http's TLS server uses the most memory of the
 entries measured on HttpArena's json-tls. The decision was in
-[decisions](../docs/decisions.md) until 2026-10-22 ("Connections over our own Rust
+[decisions](../../docs/decisions.md) until 2026-10-22 ("Connections over our own Rust
 library on rustls", in git at `9f0a33b`).
 
 ## Why
@@ -32,7 +33,7 @@ and this package's memory BIOs freed once empty (task 004):
 - On json-tls at 4,096 connections, the Goose entry used 272 MiB against 152-188 MiB for
   the Rust entries, which use rustls (goose-http's task 014.02, "Measured").
 
-Task 005's spike ([spike 01](../spikes/01-rustls/README.md)) drove an OpenSSL server set
+Task 005's spike ([spike 01](../../spikes/01-rustls/README.md)) drove an OpenSSL server set
 up as the shim's and a rustls server through rustls-ffi with the same feed, read, write,
 and drain calls, against OpenSSL clients in one process, both negotiating
 X25519MLKEM768 (rustls 0.23.46 on aws-lc-rs against OpenSSL 3.5.5, medians of 5 runs):
@@ -78,7 +79,7 @@ a client offering only protocols the server lacks now fails (1).
   43 externs; only `library()`'s text and the error texts change. The crate sits
   beside `shim/` until the C goes, and is named for its toolchain: cargo builds it, and
   `CMakeLists.txt` finds its `Cargo.toml` there.
-- **Handles stay raw pointers** ([decisions](../docs/decisions.md), "Handles are raw
+- **Handles stay raw pointers** ([decisions](../../docs/decisions.md), "Handles are raw
   pointers"): a context is an `Arc` whose strong count `share` and `free` move; a
   connection and a key are `Box`es.
 - **The unbuffered connection** (`UnbufferedServerConnection`,

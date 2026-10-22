@@ -3,8 +3,8 @@
 Status: in-progress (direction agreed 2026-10-22; spike 02 passed its go/no-go on
 2026-10-22; the server and its session tickets merged to `main` and released in
 `v0.0.4` on 2026-10-22, ahead of step 7's network benchmarks at the maintainer's
-request; goose-http's client check, those benchmarks, and the resumption fuzz target
-remain)
+request; the server's overhead cut merged to `main` on 2026-10-22; goose-http's client
+check, those benchmarks, and the resumption fuzz target remain)
 
 goose-tls's server connections move from OpenSSL's libssl to a TLS 1.3 server written in
 Goose, with libcrypto's EVP for every cryptographic primitive. The reason is memory:
@@ -167,8 +167,9 @@ any of them.
 
 - **The plan lives in this task** ([plan.md](plan.md)), copied from the handoff
   unchanged except its status line, so that the repository holds it.
-- **Task 006 stays in `tasks/`, cancelled**, rather than archived: it maps rustls's
-  API, which this task reads as a peer implementation.
+- **Task 006 stayed in `tasks/`, cancelled**, for its map of rustls's API, which this
+  task read as a peer implementation; archived 2026-10-22 once the maintainer confirmed
+  that rustls won't be used.
 - **"RFC 10024"** is correct: RFC 10024 is "Post-Quantum Traditional (PQ/T) Hybrid Key
   Agreement Mechanisms for TLS 1.3", which defines X25519MLKEM768 (checked 2026-10-22).
 - **The build-time switch is an environment variable read at CMake's first
@@ -273,7 +274,7 @@ server differs.
 | goose-tls | `no-ktls` | kTLS removed (`7ffb6f7`), from `main` at `cd5c42c` |
 | goose-tls | `macos-check` | The scripts' fixes for macOS and its results ([macOS](#macos)), from `goose-server` |
 | goose-http | `no-ktls` | kTLS's handoff removed (`d328c93b`), from its `main` |
-| goose-tls | `perf-overhead` | [The server's overhead cut](#the-servers-overhead-cut), from `main` at `68e7364`; not merged |
+| goose-tls | `perf-overhead` | [The server's overhead cut](#the-servers-overhead-cut), from `main` at `68e7364`; fast-forwarded into `main` (2026-10-22) |
 
 ## Measurements
 
@@ -395,7 +396,10 @@ The tests on `36b4b9b`: `scripts/test.sh` on both builds in WSL (Linux), and
 `scripts/test-sanitizers.sh`, all 22 clean with leak detection. The fuzzers ran five
 minutes each, at once, with no findings: `fuzz_hello` 143,646,667 runs, `fuzz_conn`
 12,200,310, and `fuzz_open` 1,246,726; and at `0412aba`, before the HMAC change,
-141,673,074, 11,919,720, and 843,486.
+141,673,074, 11,919,720, and 843,486. tlsfuzzer's scripts gave the counts in
+[tlsfuzzer.md](tlsfuzzer.md), but for keyupdate's intermittent failure, which `main`
+before this work shows as well (there). The golden tests weren't run on Windows: the
+machine had no vcpkg OpenSSL then.
 
 ## macOS
 

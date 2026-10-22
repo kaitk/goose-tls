@@ -6,7 +6,7 @@ Would rustls serve TLS 1.3 at the same or better CPU cost, and with less memory 
 connection, than OpenSSL 3.5 as this package uses it? Asked 2026-10-20, after
 goose-http's json-tls run used 272 MiB at 4,096 connections against 152-188 MiB for the
 Rust entries (goose-http's task 058). The method, the numbers, and the API mapping are in
-[spike 01](../spikes/01-rustls/README.md).
+[spike 01](../../spikes/01-rustls/README.md).
 
 rustls clears the bar in every measurement on the desktop (rustls 0.23.46 on
 aws-lc-rs, against OpenSSL 3.5.5, both negotiating X25519MLKEM768):
