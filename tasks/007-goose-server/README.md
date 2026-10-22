@@ -122,8 +122,9 @@ Done 2026-10-22 ([spike 02](../../spikes/02-goose-server/README.md)).
 
 - [ ] json-tls and 8gbit in separate server and client processes over the network,
       with production ticket settings and the server process's memory
-- [ ] A release and goose-http's pin moved: `v0.0.4` (2026-10-22); goose-http's pin
-      in progress
+- [x] A release and goose-http's pin moved: `v0.0.4` (2026-10-22); goose-http's branch
+      `goose-tls-v0.0.4` (`7b712001`), with its `no-ktls` merged in, passes its
+      `scripts/test.sh` on Linux against the tag, TLS on every loop
 - [ ] A documented rebuild and redeploy command for the OpenSSL build, in goose-http
 
 ## How the server is built
@@ -360,7 +361,6 @@ None blocks the work.
 
 ## Next
 
-- goose-http on `v0.0.4`: its pin moved and its suites run.
 - goose-http's client check (step 6): curl, wrk, h2load, oha, Chromium, and Firefox,
   with resumption recorded.
 - The resumption fuzz target (step 5).
