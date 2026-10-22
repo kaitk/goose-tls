@@ -1028,9 +1028,12 @@ int64_t tlsg_ticket_now(void) {
 #endif
 }
 
-/* For test/server/tickets.goose: moves the ticket clock forward by
-   seconds. */
-void tlsg_ticket_clock(int64_t seconds) { clock_offset += seconds; }
+/* For the tests (test/server/tickets.goose, and the echo server's "clock"
+   line): moves the ticket clock forward by seconds, never back, so that it
+   can only expire keys and tickets sooner. */
+void tlsg_ticket_clock(int64_t seconds) {
+    if (seconds > 0) clock_offset += seconds;
+}
 
 /* Wipes the keys past opening tickets. */
 static void keys_expire(ticket_key ring[2], int64_t now) {
