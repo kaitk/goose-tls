@@ -16,7 +16,7 @@ read the file a task touches before starting it.
   and RFC 8737 (TLS-ALPN-01).
 - The library: OpenSSL 3's manual pages, for the version `docs/development.md` names.
 - Its first users: goose-http, from its `http.tls` module (goose-http's task 014), and
-  goose-rest's HttpArena entry (goose-rest's task 047).
+  Plod's HttpArena entry (Plod's task 047).
 - The language: the pinned Goose release's `docs/tutorial.md`, `docs/goose_spec.md`,
   `docs/stdlib.md`, and `docs/packages.md` (C sources and libraries in a `.build`
   sidecar). Read the tutorial before writing Goose; check the spec before assuming a
