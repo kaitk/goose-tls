@@ -3,8 +3,9 @@
 Status: in-progress (direction agreed 2026-10-22; spike 02 passed its go/no-go on
 2026-10-22; the server and its session tickets merged to `main` and released in
 `v0.0.4` on 2026-10-22, ahead of step 7's network benchmarks at the maintainer's
-request; the server's overhead cut merged to `main` on 2026-10-22; goose-http's client
-check, those benchmarks, and the resumption fuzz target remain)
+request; the server's overhead cut merged to `main` and released in `v0.0.5` on
+2026-10-22; goose-http's client check, those benchmarks, and the resumption fuzz target
+remain)
 
 goose-tls's server connections move from OpenSSL's libssl to a TLS 1.3 server written in
 Goose, with libcrypto's EVP for every cryptographic primitive. The reason is memory:

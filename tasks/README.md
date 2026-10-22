@@ -47,7 +47,7 @@ for the latest measurements.
 
 Open: task 007, a TLS 1.3 server in Goose over libcrypto, with session tickets, kTLS
 removed, and OpenSSL kept as a build-time alternative. The server and its tickets are
-released in `v0.0.4`, which goose-http's pin took, and its overhead cut is on `main`;
+released in `v0.0.4`, which goose-http's pin took, and its overhead cut in `v0.0.5`;
 goose-http's client check, the network benchmarks, and a resumption fuzz target remain.
 
 Archived: task 001, server TLS, done, which goose-http's HTTP/1.1 over TLS (its task

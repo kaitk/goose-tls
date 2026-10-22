@@ -62,7 +62,7 @@ OpenSSL's headers and libraries installed ([development](docs/development.md#ope
 
 ```goose
 import std;
-import tls from "github.com/kaitk/goose-tls@v0.0.4";
+import tls from "github.com/kaitk/goose-tls@v0.0.5";
 
 fn main() {
     let ctx, ok = tls::server_files("server.crt", "server.key", ["h2", "http/1.1"]);
@@ -88,8 +88,9 @@ fn main() {
 goose build server.goose
 ```
 
-The tag `v0.0.4` has every feature above. It replaced libssl's server with the
-Goose server and removed kTLS's calls; `v0.0.3` is the last release with both.
+The tag `v0.0.5` has every feature above and the performance figures. `v0.0.4` replaced
+libssl's server with the Goose server and removed kTLS's calls; `v0.0.3` is the last
+release with both.
 
 `test/tools/echo_server.goose` is a whole server, and `test/tools/client.goose` a whole
 client, over blocking sockets of their own.
