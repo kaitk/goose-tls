@@ -2,9 +2,9 @@
 
 Status: in-progress (asked for 2026-10-24). Built: QUIC's handshake is a mode of this
 package's Goose server, and its packet protection is the shim's, which goose-http's
-HTTP/3 (its task 066) serves with. What remains is measuring.
+HTTP/3 (its task 067) serves with. What remains is measuring.
 
-goose-http's task 066 serves HTTP/3, and QUIC carries TLS 1.3's handshake in CRYPTO
+goose-http's task 067 serves HTTP/3, and QUIC carries TLS 1.3's handshake in CRYPTO
 frames instead of records (RFC 9001). The Goose server here already runs that
 handshake, so QUIC needs a mode of it, not another library
 ([decisions](../docs/decisions.md#quic)); how it works is in
@@ -41,6 +41,18 @@ own AES code waits for a measurement that shows libcrypto is the cost.
 Out of scope: Retry, which goose-http doesn't send, and with it Appendix A.4's Retry
 tag.
 
+## Measured
+
+2026-10-24 on Tiamat: Ryzen 7 5800X3D, WSL2 Ubuntu 26.04, kernel
+6.18.54.1-microsoft-standard-WSL2.
+
+- A json-like request over TCP, task 007's measurement (spike 02, the Goose server,
+  default groups, session tickets on, 200,000 requests over 1,000 connections, the
+  server on CPU 2), `main` and this branch alternating over 5 rounds: 2.22 µs a request
+  on `main` (2.21 to 2.23), 2.21 µs on this branch (2.19 to 2.23).
+- goose-http's HTTP/1.1, h2c, and TLS paths, with this branch in the image: unchanged
+  (goose-http's task 067, "Regressions").
+
 ## Acceptance criteria
 
 - [x] RFC 9001 Appendix A's vectors: the client's Initial opened and its ClientHello
@@ -48,10 +60,10 @@ tag.
       ChaCha20 short header sealed byte for byte, and a key update each way
       (`test/server/rfc9001.goose`, 2026-10-24)
 - [x] QUIC handshakes against ngtcp2's client (h2load-h3) and aioquic's, through
-      goose-http's task 066 (2026-10-24)
+      goose-http's task 067 (2026-10-24)
 - [x] TLS over TCP unchanged: the tests and `scripts/test-handshake.sh` pass
       (2026-10-24, macOS)
 - [ ] Sealing measured at 1,200 bytes, a packet a call, under goose-http's h3 load: the
       share of a request it takes
-- [ ] A json-like request over TCP costs what it did before this task (task 007's
-      measurement)
+- [x] A json-like request over TCP costs what it did before this task (task 007's
+      measurement): the same within the rounds' spread ("Measured", 2026-10-24)
