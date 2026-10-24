@@ -1,14 +1,14 @@
 # 008: QUIC's handshake and packet protection
 
-Status: in-progress (asked for 2026-10-24). Built: QUIC's handshake is a mode of this
+Status: done (2026-10-24), released in `v0.0.6`. QUIC's handshake is a mode of this
 package's Goose server, and its packet protection is the shim's, which goose-http's
-HTTP/3 (its task 067) serves with. What remains is measuring.
+HTTP/3 (its task 067) serves with.
 
 goose-http's task 067 serves HTTP/3, and QUIC carries TLS 1.3's handshake in CRYPTO
 frames instead of records (RFC 9001). The Goose server here already runs that
 handshake, so QUIC needs a mode of it, not another library
-([decisions](../docs/decisions.md#quic)); how it works is in
-[architecture](../docs/architecture.md#quic).
+([decisions](../../docs/decisions.md#quic)); how it works is in
+[architecture](../../docs/architecture.md#quic).
 
 ## What the mode changes
 
@@ -52,6 +52,13 @@ tag.
   on `main` (2.21 to 2.23), 2.21 µs on this branch (2.19 to 2.23).
 - goose-http's HTTP/1.1, h2c, and TLS paths, with this branch in the image: unchanged
   (goose-http's task 067, "Regressions").
+- Packet protection under HTTP/3's load: Plod's HttpArena entry with goose-http's
+  tuned HTTP/3 (its task 067, "Tuning"), 4 workers on CPUs 0-3, h2load-h3 with 64
+  connections × 64 streams on CPUs 4-15, over loopback, its user instructions sampled
+  with perf. On baseline-h3, libcrypto's AEAD and header protection take 4.1% and the
+  shim's calls 0.2%; on static-h3, whose packets are full, 28% and 1.3%. The crossing
+  into C a packet a call costs too little to batch, and AES-GCM is libcrypto's stitched
+  code, so neither the batch nor own AES code is worth it yet.
 
 ## Acceptance criteria
 
@@ -63,7 +70,7 @@ tag.
       goose-http's task 067 (2026-10-24)
 - [x] TLS over TCP unchanged: the tests and `scripts/test-handshake.sh` pass
       (2026-10-24, macOS)
-- [ ] Sealing measured at 1,200 bytes, a packet a call, under goose-http's h3 load: the
-      share of a request it takes
+- [x] Sealing measured at 1,200 bytes, a packet a call, under goose-http's h3 load: the
+      share of a request it takes ("Measured", 2026-10-24)
 - [x] A json-like request over TCP costs what it did before this task (task 007's
       measurement): the same within the rounds' spread ("Measured", 2026-10-24)
