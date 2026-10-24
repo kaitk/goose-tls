@@ -327,6 +327,97 @@ fn alpn(c: Conn) -> u8[>..] {
     return s;
 }
 
+// QUIC (RFC 9001, docs/architecture.md, "QUIC"): the handshake of a QUIC
+// connection, whose messages travel in CRYPTO frames at an encryption level,
+// and the protection of its packets. The program parses and builds the
+// packets; this package keeps the keys and seals, opens, and masks packets
+// in place. The Goose server only: with libssl's server, quic_accept fails.
+
+// Encryption levels, and the keys each names: the 1-RTT keys of the current
+// phase, the next (made by quic_next, for a key update), and the previous
+// (after quic_rotate, for late packets).
+let QUIC_INITIAL = 0;
+let QUIC_HANDSHAKE = 2;
+let QUIC_APP = 3;
+let QUIC_NEXT = 4;
+let QUIC_PREV = 5;
+
+// A new QUIC server connection for a client's first Initial packet: dcid is
+// that packet's Destination Connection ID, from which the Initial keys come,
+// and params the server's transport parameters, encoded (RFC 9000, section
+// 18), which EncryptedExtensions carries. Check ok(c). ctx's ALPN protocols
+// must hold the one the client offers.
+fn quic_accept(ctx: Context, dcid: const u8[:], params: const u8[:]) -> Conn {
+    guard ours(ctx.id) else { return Conn { .. }; }
+    return Conn { id: s_quic_accept(ctx.id, dcid, params) };
+}
+
+// Hands the handshake CRYPTO data that arrived at level, in order and once,
+// and advances it: 0 once it is done, WANT_INPUT, HELLO (as handshake
+// returns it), or FAILED, when quic_alert gives the alert for the
+// CONNECTION_CLOSE, 0x100 plus it. After HELLO, call it again with no data.
+fn quic_crypto(c: Conn, level: i64, data: const u8[:]) -> i64 { s_quic_crypto(c.id, level, data) }
+
+// Moves the next handshake message the server sends onto out, for CRYPTO
+// frames: its level, or -1 when none waits. Take until -1 after each
+// quic_crypto.
+fn quic_take(c: Conn, out: u8[>..]&) -> i64 { g_quic_take(c.id, out) }
+
+// The alert a FAILED handshake ended with.
+fn quic_alert(c: Conn) -> i64 { s_quic_alert(c.id) }
+
+// The client's transport parameters, encoded, once its ClientHello is in.
+fn quic_peer_params(c: Conn) -> u8[>..] {
+    var s: u8[>..] = [];
+    g_quic_params(c.id, 1, s);
+    return s;
+}
+
+// Whether there are keys to read packets of key with: Initial's until
+// quic_drop, Handshake's and 1-RTT's once the handshake has made them.
+fn quic_has(c: Conn, key: i64) -> bool { g_quic_has(c.id, key, false) }
+
+// Whether there are keys to seal packets of key with: 1-RTT's come once the
+// server's flight is out, before the client's Finished gives those to read.
+fn quic_can_seal(c: Conn, key: i64) -> bool { g_quic_has(c.id, key, true) }
+
+// Seals a packet in place under key's write keys (RFC 9001, sections 5.3 and
+// 5.4). pkt is the whole packet: hdr_len bytes of header, which end in the
+// packet number's pn_len bytes, then the payload, then 16 bytes for the tag.
+// The packet number and payload together are at least 4 bytes, which padding
+// makes up.
+fn quic_seal(c: Conn, key: i64, pkt: u8[:], hdr_len: i64, pn_len: i64, pn: i64) -> bool {
+    g_quic_seal(c.id, key, pkt, hdr_len, pn_len, pn) == 0
+}
+
+// Removes header protection in place from a received packet, all of pkt,
+// whose packet number starts at pn_at: its first byte, unmasked, which gives
+// the packet number's length and the key phase; or -1 when the packet is
+// too short to sample or key has no keys.
+fn quic_unprotect(c: Conn, key: i64, pkt: u8[:], pn_at: i64) -> i64 {
+    g_quic_unprotect(c.id, key, pkt, pn_at)
+}
+
+// Opens a packet in place once its header protection is off: hdr_len bytes
+// of header, then the payload and its tag, to pkt's end, under key's read
+// keys and the full packet number pn. The payload's length, from hdr_len,
+// or -1 when it doesn't authenticate.
+fn quic_open(c: Conn, key: i64, pkt: u8[:], hdr_len: i64, pn: i64) -> i64 {
+    g_quic_open(c.id, key, pkt, hdr_len, pn)
+}
+
+// Makes the next key phase's keys each way, QUIC_NEXT, unless they are there
+// (RFC 9001, section 6).
+fn quic_next(c: Conn) -> bool { g_quic_next(c.id) }
+
+// Moves to the next phase: QUIC_NEXT's keys become QUIC_APP's, and QUIC_APP's
+// read keys QUIC_PREV's.
+fn quic_rotate(c: Conn) -> bool { g_quic_rotate(c.id) }
+
+// Discards key's keys: Initial's and Handshake's once the handshake no
+// longer needs them, and QUIC_PREV's once late packets stop.
+fn quic_drop(c: Conn, key: i64) { g_quic_drop(c.id, key); }
+
 // The version once the handshake is done, "TLSv1.3"; "" before.
 fn version(c: Conn) -> u8[>..] {
     var s: u8[>..] = [];

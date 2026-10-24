@@ -73,6 +73,20 @@ extern "tlsg_rec_update" fn g_rec_update(id: i64, dir: i64) -> bool;
 extern "tlsg_rec_seal" fn g_seal(id: i64, kind: i64, data: const u8[:]) -> i64;
 extern "tlsg_rec_open" fn g_open(id: i64, len: i64) -> i64;
 extern "tlsg_rec_seq" fn g_seq(id: i64, dir: i64) -> i64;
+extern "tlsg_quic_begin" fn g_quic_begin(id: i64) -> bool;
+extern "tlsg_quic_initial" fn g_quic_initial(id: i64, dcid: const u8[:]) -> bool;
+extern "tlsg_quic_keys" fn g_quic_keys(id: i64, level: i64, dir: i64, slot: i64) -> bool;
+extern "tlsg_quic_out" fn g_quic_out(id: i64, level: i64, data: const u8[:]) -> bool;
+extern "tlsg_quic_params_set" fn g_quic_params_set(id: i64, which: i64, params: const u8[:]) -> bool;
+extern "tlsg_quic_params" fn g_quic_params(id: i64, which: i64, out: u8[>..]&);
+extern "tlsg_quic_take" fn g_quic_take(id: i64, out: u8[>..]&) -> i64;
+extern "tlsg_quic_seal" fn g_quic_seal(id: i64, key: i64, pkt: u8[:], hdr_len: i64, pn_len: i64, pn: i64) -> i64;
+extern "tlsg_quic_unprotect" fn g_quic_unprotect(id: i64, key: i64, pkt: u8[:], pn_at: i64) -> i64;
+extern "tlsg_quic_open" fn g_quic_open(id: i64, key: i64, pkt: u8[:], hdr_len: i64, pn: i64) -> i64;
+extern "tlsg_quic_next" fn g_quic_next(id: i64) -> bool;
+extern "tlsg_quic_rotate" fn g_quic_rotate(id: i64) -> bool;
+extern "tlsg_quic_drop" fn g_quic_drop(id: i64, key: i64);
+extern "tlsg_quic_has" fn g_quic_has(id: i64, key: i64, write: bool) -> bool;
 extern "tlsg_fail" fn g_fail(reason: i64, text: const u8[:]);
 extern "tlsg_clear_errors" fn g_clear_errors();
 extern "tlsg_backend" fn g_backend() -> i64;
@@ -123,6 +137,13 @@ let GROUP_P384 = 0x0018;
 // Directions, as shim/server.c numbers them.
 let DIR_READ = 0;
 let DIR_WRITE = 1;
+
+// QUIC's encryption levels, as shim/server.c numbers their keys: a QUIC
+// connection's handshake messages go at these levels in CRYPTO frames, not
+// in records (RFC 9001, section 4).
+let QL_INITIAL = 0;
+let QL_HANDSHAKE = 2;
+let QL_APP = 3;
 
 // Handshake secret slots in C.
 let S_EARLY = 0;
@@ -205,8 +226,14 @@ struct ServerState {
     scan_have: i64,
     scan_need: i64,
     scan_head: u8[..4],
-    // An encrypted handshake message that began in an earlier record.
+    // An encrypted handshake message that began in an earlier record, or in
+    // QUIC an earlier CRYPTO frame.
     hs: u8[..64],
+    // A QUIC connection (RFC 9001): handshake messages without records, at
+    // the level each belongs to, and on failure the alert its
+    // CONNECTION_CLOSE carries rather than one sent.
+    quic: bool,
+    quic_alert: i64,
     last: u8,
 }
 
@@ -225,7 +252,9 @@ fn empty_hash(suite: i64) -> const u8[:] { if suite == 0x1302 { EMPTY_SHA384 } e
 // held, and returns FAILED.
 fn fail(id: i64, st: ServerState&, alert: i64, reason: i64, text: const u8[:]) -> i64 {
     g_fail(reason, text);
-    if alert >= 0 && !st.closed {
+    if st.quic {
+        st.quic_alert = if alert >= 0 { alert } else { ALERT_INTERNAL_ERROR };
+    } else if alert >= 0 && !st.closed {
         if st.sealing {
             var a: u8[2] = [2, alert as! u8];
             g_seal(id, CT_ALERT, a);
@@ -282,8 +311,52 @@ fn advance(id: i64, st: ServerState&) -> i64 {
 // Takes one unit of what was fed: a ClientHello, or a record.
 fn step(id: i64, st: ServerState&) -> i64 {
     if st.peer_closed { return CLOSED; }
+    if st.quic { return quic_step(id, st); }
     if st.phase == PH_HELLO || st.phase == PH_RETRY { return hello_step(id, st); }
     return record_step(id, st);
+}
+
+// In QUIC, the bytes fed are the CRYPTO stream of the level the phase
+// expects (s_quic_crypto checks it), messages without records: the
+// ClientHello at Initial, then the client's Finished at Handshake. The
+// client sends nothing at 1-RTT; a KeyUpdate is forbidden (RFC 9001, section
+// 6).
+fn quic_step(id: i64, st: ServerState&) -> i64 {
+    if st.phase == PH_HELLO || st.phase == PH_RETRY {
+        if st.scan_need == 0 {
+            var head: u8[4] = [0; 4];
+            guard g_in_peek(id, 0, head) == 4 else { return WANT_INPUT; }
+            guard head[0] == HS_CLIENT_HELLO else {
+                return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "not a ClientHello");
+            }
+            st.scan_need = 4 + ((head[1] as i64) << 16 | (head[2] as i64) << 8 | head[3]);
+            guard st.scan_need <= MAX_HELLO else {
+                return fail(id, st, ALERT_ILLEGAL_PARAMETER, R_EXCESSIVE_MESSAGE_SIZE, "ClientHello");
+            }
+        }
+        let have = g_in_len(id);
+        guard have >= st.scan_need else { return WANT_INPUT; }
+        guard have == st.scan_need else {
+            return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "bytes after the ClientHello");
+        }
+        st.scan_at = st.scan_need;
+        var msg: u8[>..] = [];
+        copy_hello(id, st, msg);
+        return serve(id, st, msg);
+    }
+    let n = g_in_len(id);
+    guard n > 0 else { return WANT_INPUT; }
+    guard st.phase == PH_FINISHED else {
+        return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "a handshake message after the handshake");
+    }
+    var got: u8[64] = [0; 64];
+    let k = g_in_peek(id, 0, got[..min(n, st.hs.cap - st.hs.len)]);
+    g_in_skip(id, k);
+    for b in got[..k] { st.hs.push(b); }
+    guard k == n else {
+        return fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_NOT_ON_RECORD_BOUNDARY, "bytes after the client's Finished");
+    }
+    return handshake_messages(id, st);
 }
 
 // Before a ClientHello: the records that may come ahead of it, then the
@@ -390,6 +463,11 @@ fn scan_hello(id: i64, st: ServerState&) -> i64 {
 // Copies the scanned ClientHello's bytes, without the record headers, into
 // msg.
 fn copy_hello(id: i64, st: ServerState&, msg: u8[>..]&) {
+    if st.quic {
+        msg.resize(st.scan_need, 0);
+        g_in_peek(id, 0, msg);
+        return;
+    }
     var at = 0;
     while at < st.scan_at {
         let kind, len, ok = header(id, at);
@@ -425,8 +503,16 @@ struct Choice { suite: i64, group: i64, retry: bool, alpn: i64 }
 // Chooses the suite, group, and ALPN protocol for h, or refuses it. The
 // group is the first of the server's for which the client sent a share, or
 // else the first the client supports, which needs a HelloRetryRequest.
-fn negotiate(id: i64, h: Hello&, c: Choice&) -> Refusal {
+fn negotiate(id: i64, h: Hello&, c: Choice&, quic: bool) -> Refusal {
     let ctx = g_conn_ctx(id);
+    // QUIC needs its transport parameters, and an application protocol
+    // (RFC 9001, sections 8.1 and 8.2), and has no middlebox compatibility
+    // mode, so no legacy session ID (section 8.4).
+    if quic {
+        guard h.has_quic_params else { return refuse(ALERT_MISSING_EXTENSION, R_BAD_EXTENSION, "quic_transport_parameters"); }
+        guard h.has_alpn else { return refuse(ALERT_NO_APPLICATION_PROTOCOL, R_NO_APPLICATION_PROTOCOL, ""); }
+        guard h.session_id.len == 0 else { return refuse(ALERT_ILLEGAL_PARAMETER, R_BAD_PACKET, "a legacy session ID"); }
+    }
     // legacy_version is 0x0303 in a TLS 1.3 ClientHello (section 4.1.2);
     // below it, the client is broken, as tlsfuzzer and OpenSSL take it.
     guard h.has_versions && has16(h.versions, TLS13) && h.legacy_version >= 0x0303 else {
@@ -483,7 +569,7 @@ fn negotiate(id: i64, h: Hello&, c: Choice&) -> Refusal {
                 if vec8(h.alpn, o) == name { c.alpn = k; }
             }
         }
-        guard c.alpn != 0 || ours.len == 0 else {
+        guard c.alpn != 0 || (ours.len == 0 && !quic) else {
             return refuse(ALERT_NO_APPLICATION_PROTOCOL, R_NO_APPLICATION_PROTOCOL, "");
         }
     }
@@ -536,9 +622,12 @@ fn serve(id: i64, st: ServerState&, msg: const u8[:]) -> i64 {
     st.paused = false;
     st.chosen = true;
     var c = Choice { suite: 0, group: 0, retry: false, alpn: 0 };
-    let refusal = negotiate(id, h, c);
+    let refusal = negotiate(id, h, c, st.quic);
     guard refusal.alert < 0 else { return fail_with(id, st, refusal); }
     g_set_sni(id, h.sni);
+    if st.quic && !g_quic_params_set(id, 1, h.quic_params) {
+        return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the transport parameters");
+    }
     if st.phase == PH_RETRY {
         var first: u8[>..] = [];
         g_hello_kept(id, first);
@@ -626,7 +715,7 @@ fn retry(id: i64, st: ServerState&, h: Hello&) -> i64 {
     var m: u8[>..] = [];
     server_hello(m, HRR_RANDOM, h.session_id, st.suite, st.group, "", -1);
     g_tr_update(id, m);
-    send_plain(id, CT_HANDSHAKE, m);
+    send_hello(id, st, m);
     if h.session_id.len > 0 && !st.ccs_sent {
         g_out_put(id, CCS_RECORD);
         st.ccs_sent = true;
@@ -668,6 +757,12 @@ fn server_hello(m: u8[>..]&, random: const u8[:], session_id: const u8[:], suite
     }
     end_vec(m, exts, 2);
     end_vec(m, body, 3);
+}
+
+// Sends a ServerHello or HelloRetryRequest: unencrypted records, or in QUIC
+// the Initial level.
+fn send_hello(id: i64, st: ServerState&, m: const u8[:]) {
+    if st.quic { g_quic_out(id, QL_INITIAL, m); } else { send_plain(id, CT_HANDSHAKE, m); }
 }
 
 // Appends unencrypted records of kind holding data.
@@ -722,12 +817,12 @@ fn answer(id: i64, st: ServerState&, h: Hello&, psk: i64) -> i64 {
     var m: u8[>..] = [];
     server_hello(m, random, h.session_id, st.suite, st.group, share, psk);
     g_tr_update(id, m);
-    send_plain(id, CT_HANDSHAKE, m);
+    send_hello(id, st, m);
     if h.session_id.len > 0 && !st.ccs_sent {
         g_out_put(id, CCS_RECORD);
         st.ccs_sent = true;
     }
-    guard handshake_keys(id, st.suite, psk >= 0) else {
+    guard handshake_keys(id, st, psk >= 0) else {
         return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the handshake keys");
     }
     st.sealing = true;
@@ -748,6 +843,14 @@ fn answer(id: i64, st: ServerState&, h: Hello&, psk: i64) -> i64 {
         end_vec(flight, list, 2);
         end_vec(flight, ext, 2);
     }
+    if st.quic {
+        var params: u8[>..] = [];
+        g_quic_params(id, 0, params);
+        put16(flight, EXT_QUIC_TRANSPORT_PARAMETERS);
+        let ext = begin_vec(flight, 2);
+        flight.append(params);
+        end_vec(flight, ext, 2);
+    }
     end_vec(flight, ee_exts, 2);
     end_vec(flight, ee_body, 3);
     if psk >= 0 {
@@ -757,10 +860,11 @@ fn answer(id: i64, st: ServerState&, h: Hello&, psk: i64) -> i64 {
             return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the signature");
         }
     }
-    guard server_finished(id, st.suite, flight) && send_sealed(id, CT_HANDSHAKE, flight) else {
+    guard server_finished(id, st.suite, flight) &&
+          (if st.quic { g_quic_out(id, QL_HANDSHAKE, flight) } else { send_sealed(id, CT_HANDSHAKE, flight) }) else {
         return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the server's Finished");
     }
-    guard application_keys(id, st.suite) else {
+    guard application_keys(id, st) else {
         return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the application keys");
     }
     st.phase = PH_FINISHED;
@@ -815,7 +919,8 @@ fn certificate(id: i64, st: ServerState&, flight: u8[>..]&, ee: i64) -> bool {
 // S_SHARED: the handshake secrets, and the handshake keys each way. The
 // early secret is from no PSK, unless resumed, when S_EARLY has it from the
 // ticket's (resume).
-fn handshake_keys(id: i64, suite: i64, resumed: bool) -> bool {
+fn handshake_keys(id: i64, st: ServerState&, resumed: bool) -> bool {
+    let suite = st.suite;
     var hb: u8[48] = [0; 48];
     let ok = (resumed || g_extract(id, S_EARLY, -1, -1)) &&
              derive(id, S_DERIVED, S_EARLY, "derived", empty_hash(suite)) &&
@@ -825,7 +930,14 @@ fn handshake_keys(id: i64, suite: i64, resumed: bool) -> bool {
     let h = transcript(id, hb);
     return ok && h.len > 0 && derive(id, S_CLIENT_HS, S_HANDSHAKE, "c hs traffic", h) &&
            derive(id, S_SERVER_HS, S_HANDSHAKE, "s hs traffic", h) &&
-           g_rec_keys(id, DIR_WRITE, S_SERVER_HS) && g_rec_keys(id, DIR_READ, S_CLIENT_HS);
+           traffic_keys(id, st, QL_HANDSHAKE, DIR_WRITE, S_SERVER_HS) &&
+           traffic_keys(id, st, QL_HANDSHAKE, DIR_READ, S_CLIENT_HS);
+}
+
+// Gives a direction the traffic secret in slot: its record keys, or in QUIC
+// the packet keys of level.
+fn traffic_keys(id: i64, st: ServerState&, level: i64, dir: i64, slot: i64) -> bool {
+    if st.quic { g_quic_keys(id, level, dir, slot) } else { g_rec_keys(id, dir, slot) }
 }
 
 // Once the CertificateVerify is in the transcript: appends the server's
@@ -847,13 +959,14 @@ fn server_finished(id: i64, suite: i64, flight: u8[>..]&) -> bool {
 // Finished too, which is known now as well; it waits in S_RESUMPTION for the
 // tickets. Wipes the rest of the handshake's secrets and frees the
 // transcript.
-fn application_keys(id: i64, suite: i64) -> bool {
+fn application_keys(id: i64, st: ServerState&) -> bool {
+    let suite = st.suite;
     var hb: u8[48] = [0; 48];
     let h = transcript(id, hb);
     var ok = h.len > 0 && derive(id, S_DERIVED, S_HANDSHAKE, "derived", empty_hash(suite)) &&
              g_extract(id, S_MASTER, S_DERIVED, -1) && derive(id, S_CLIENT_AP, S_MASTER, "c ap traffic", h) &&
              derive(id, S_SERVER_AP, S_MASTER, "s ap traffic", h) &&
-             g_finished(id, S_CLIENT_FINISHED, S_CLIENT_HS, h) && g_rec_keys(id, DIR_WRITE, S_SERVER_AP);
+             g_finished(id, S_CLIENT_FINISHED, S_CLIENT_HS, h) && traffic_keys(id, st, QL_APP, DIR_WRITE, S_SERVER_AP);
     var hr: u8[48] = [0; 48];
     ok = ok && g_tr_add_finished(id, S_CLIENT_FINISHED);
     let with_finished = transcript(id, hr);
@@ -973,7 +1086,7 @@ fn handshake_messages(id: i64, st: ServerState&) -> i64 {
         guard g_check(id, S_CLIENT_FINISHED, body[..len]) else {
             return fail(id, st, ALERT_DECRYPT_ERROR, R_DIGEST_CHECK_FAILED, "the client's Finished");
         }
-        guard g_rec_keys(id, DIR_READ, S_CLIENT_AP) else {
+        guard traffic_keys(id, st, QL_APP, DIR_READ, S_CLIENT_AP) else {
             return fail(id, st, ALERT_INTERNAL_ERROR, R_INTERNAL, "the client's keys");
         }
         issue_tickets(id, st);
@@ -1020,7 +1133,7 @@ fn issue_tickets(id: i64, st: ServerState&) {
         end_vec(m, t, 2);
         put16(m, 0);
         end_vec(m, body, 3);
-        guard g_seal(id, CT_HANDSHAKE, m) >= 0 else { break; }
+        guard (if st.quic { g_quic_out(id, QL_APP, m) } else { g_seal(id, CT_HANDSHAKE, m) >= 0 }) else { break; }
     }
     g_wipe(id, S_RESUMPTION);
 }
@@ -1125,6 +1238,50 @@ fn s_shutdown(id: i64) -> i64 {
         store(id, st);
     }
     return 0;
+}
+
+// A QUIC connection (tls.goose's quic_accept): its Initial keys from dcid,
+// and the server's transport parameters, before any CRYPTO data.
+fn s_quic_accept(ctx: i64, dcid: const u8[:], params: const u8[:]) -> i64 {
+    let id = g_accept(ctx);
+    guard id != 0 else { return 0; }
+    guard g_quic_begin(id) && g_quic_initial(id, dcid) && g_quic_params_set(id, 0, params) else {
+        g_conn_free(id);
+        return 0;
+    }
+    var st = ServerState { .. };
+    load(id, st);
+    st.quic = true;
+    store(id, st);
+    return id;
+}
+
+// Feeds CRYPTO data that arrived at level, in order, and advances the
+// handshake. Data at a level the handshake isn't reading fails it with
+// unexpected_message (RFC 9001, section 4.1.3).
+fn s_quic_crypto(id: i64, level: i64, data: const u8[:]) -> i64 {
+    g_clear_errors();
+    var st = ServerState { .. };
+    load(id, st);
+    var r = 0;
+    if st.phase == PH_FAILED {
+        r = FAILED;
+    } else if data.len > 0 && (st.phase == PH_OPEN ||
+                               level != (if st.phase == PH_FINISHED { QL_HANDSHAKE } else { QL_INITIAL })) {
+        r = fail(id, st, ALERT_UNEXPECTED_MESSAGE, R_UNEXPECTED_MESSAGE, "CRYPTO data at the wrong level");
+    } else if g_feed(id, data, MAX_FED) < 0 {
+        r = fail(id, st, ALERT_INTERNAL_ERROR, R_PACKET_LENGTH_TOO_LONG, "more CRYPTO data than the connection holds");
+    } else {
+        r = advance(id, st);
+    }
+    store(id, st);
+    return r;
+}
+
+fn s_quic_alert(id: i64) -> i64 {
+    var st = ServerState { .. };
+    load(id, st);
+    return st.quic_alert;
 }
 
 fn s_alpn(id: i64, out: u8[>..]&) {

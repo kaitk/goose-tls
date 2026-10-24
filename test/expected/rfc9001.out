@@ -1,0 +1,29 @@
+a QUIC connection: ok
+the client's first byte: 195
+its packet number: 2
+its payload: 1162
+its CRYPTO frame: ok
+the ClientHello: WANT_INPUT
+the ServerHello's level: 0
+  its type: 2
+the flight's level: 2
+  its first message, EncryptedExtensions: 8
+  with the server's transport parameters: ok
+nothing more: -1
+the client's transport parameters: ok
+ALPN: ok
+Handshake keys: ok
+no 1-RTT keys to read yet: ok
+CRYPTO data at the wrong level: -3
+  its alert, unexpected_message: 10
+the server's Initial: ok
+Initial keys dropped: ok
+the ChaCha20 short header packet: ok
+a 1-RTT round trip: ok
+the next phase's keys: ok
+  seal what the current keys don't open: ok
+  and open it: ok
+rotated: ok
+  the new phase current: ok
+  the old one previous: ok
+  and sealing in the new phase: ok

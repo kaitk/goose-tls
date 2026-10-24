@@ -172,6 +172,42 @@ critical; the ACME server checks it itself.
 A connection takes its protocol versions and suites from the context it was accepted
 from, which every context sets alike.
 
+## QUIC
+
+A QUIC connection (RFC 9001) runs the Goose server's handshake in a mode of its own:
+its messages travel in CRYPTO frames at an encryption level, not in records, and the
+program builds and parses the packets while this package protects them. The libssl
+server has no such mode: `tls::quic_accept` fails with it.
+
+1. `tls::quic_accept(ctx, dcid, params)` makes a connection for a client's first
+   Initial packet: its Initial keys come from `dcid`, that packet's Destination
+   Connection ID, and `params` are the server's transport parameters, encoded, which
+   EncryptedExtensions carries.
+2. `tls::quic_crypto(c, level, data)` takes CRYPTO data that arrived at a level, in
+   order and once, and advances the handshake: the ClientHello at `QUIC_INITIAL`, the
+   client's Finished at `QUIC_HANDSHAKE`. Data at another level, a ClientHello without
+   `quic_transport_parameters` or ALPN, or one with a legacy session ID, fails it; then
+   `tls::quic_alert(c)` gives the alert, which the CONNECTION_CLOSE carries as 0x100
+   plus it. `tls::quic_take(c, out)` gives each message to send, and its level: the
+   ServerHello at Initial, the flight at Handshake, the session tickets at 1-RTT, which
+   resume as over TCP, with no 0-RTT. `tls::quic_peer_params(c)` gives the client's
+   transport parameters.
+3. The keys are each level's, from the handshake's secrets with QUIC's labels (`quic
+   key`, `quic iv`, `quic hp`), and stay in C. `tls::quic_unprotect(c, key, pkt,
+   pn_at)` removes header protection in place and `tls::quic_open` opens the payload;
+   `tls::quic_seal` seals a packet and applies header protection. AES-GCM's header
+   protection is AES-ECB of a sample, ChaCha20-Poly1305's ChaCha20.
+4. A key update (section 6): `tls::quic_next(c)` makes the next phase's keys from the
+   current secrets with `quic ku`, which the program tries a packet with when its key
+   phase bit flips; `tls::quic_rotate(c)` makes them current and keeps the old read
+   keys as `QUIC_PREV` for late packets until `tls::quic_drop`. Header protection
+   keys don't change.
+
+`tls::quic_has` and `tls::quic_can_seal` say whether a level has keys to read and to
+seal with: 1-RTT's sealing keys come with the server's flight, its reading keys only
+with the client's Finished. `test/server/rfc9001.goose` checks the packets of RFC 9001's
+Appendix A, from the client's Initial through a key update.
+
 ## Client TLS
 
 A client context verifies the server: the chain must lead to a certificate it trusts,

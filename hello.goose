@@ -18,6 +18,8 @@ let EXT_SUPPORTED_VERSIONS = 43;
 let EXT_COOKIE = 44;
 let EXT_PSK_KEY_EXCHANGE_MODES = 45;
 let EXT_KEY_SHARE = 51;
+// QUIC's transport parameters (RFC 9001, section 8.2).
+let EXT_QUIC_TRANSPORT_PARAMETERS = 57;
 
 // Alerts (RFC 8446, section 6).
 let ALERT_CLOSE_NOTIFY = 0;
@@ -65,6 +67,8 @@ struct Hello {
     // message before them (section 4.2.11.2).
     binders_at: i64,
     early_data: bool,
+    quic_params: const u8[:],
+    has_quic_params: bool,
 }
 
 // Why a ClientHello was refused: the alert, and the reason for error_text.
@@ -198,6 +202,11 @@ fn parse_hello(msg: const u8[:], h: Hello&) -> Refusal {
             EXT_EARLY_DATA => {
                 h.early_data = true;
                 body.len != 0
+            },
+            EXT_QUIC_TRANSPORT_PARAMETERS => {
+                h.quic_params = body;
+                h.has_quic_params = true;
+                false
             },
             _ => false,
         };

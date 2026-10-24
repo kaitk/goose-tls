@@ -17,22 +17,17 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 
 ## Features
 
-- **TLS 1.3 server**, written in Goose over libcrypto: a certificate chain and an EC
-  P-256 or RSA key from PEM, ALPN chosen by the server, and X25519MLKEM768, X25519,
-  P-256, and P-384. libssl's server is a build option (`GOOSE_TLS_SERVER=openssl`).
-- **Session tickets**: stateless, two after a full handshake, with keys turned every two
-  hours; resumption with `psk_dhe_ke`.
-- **A context per connection**, chosen by the program at the ClientHello from the SNI
-  name and the offered ALPN protocols: a certificate per name, and TLS-ALPN-01's
-  challenge certificate for `acme-tls/1`.
-- **Certificates replaced while running**: new connections take the new context; open
-  ones keep theirs.
-- **TLS 1.3 client** over libssl, which verifies the server's chain, against OpenSSL's
-  trust store or given certificates, and its name.
-- **Keys, signatures, and certificates for ACME**: an EC P-256 key, ES256 signatures for
-  JWS, a CSR, and the TLS-ALPN-01 challenge certificate.
+- **TLS 1.3 server** in Goose over libcrypto: EC P-256 or RSA keys, ALPN, and
+  X25519MLKEM768, X25519, P-256, and P-384. libssl's server is a build option.
+- **Session tickets**: stateless, with keys turned every two hours.
+- **A context per connection**, chosen at the ClientHello, as for ACME's TLS-ALPN-01.
+- **Certificates replaced while running**; open connections keep theirs.
+- **QUIC** (RFC 9001): the server's handshake and packet protection, with key updates,
+  for a QUIC written in the program, as goose-http's HTTP/3 is.
+- **TLS 1.3 client** over libssl, which verifies the server.
+- **Keys, signatures, and certificates for ACME.**
 
-Tested against `openssl s_client`, curl, RFC 8448's traces, and tlsfuzzer on Linux
+Tested against `openssl s_client`, curl, RFC 8448's traces, RFC 9001's packets, and tlsfuzzer on Linux
 (OpenSSL 3.5.5) and macOS (3.6.5 and 4.0.3); the golden tests also pass on Windows
 (3.6.5).
 

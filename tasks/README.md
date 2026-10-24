@@ -49,6 +49,9 @@ Open: task 007, a TLS 1.3 server in Goose over libcrypto, with session tickets, 
 removed, and OpenSSL kept as a build-time alternative. The server and its tickets are
 released in `v0.0.4`, which goose-http's pin took, and its overhead cut in `v0.0.5`;
 goose-http's client check, the network benchmarks, and a resumption fuzz target remain.
+Task 008, QUIC's handshake and packet protection for goose-http's HTTP/3 (its task
+066), is built and tested against RFC 9001's vectors (2026-10-24); measuring its
+sealing and TCP's cost remains.
 
 Archived: task 001, server TLS, done, which goose-http's HTTP/1.1 over TLS (its task
 014) and HttpArena's TLS profiles (goose-rest's task 047) build on. Task 002, kTLS,

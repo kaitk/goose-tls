@@ -225,3 +225,19 @@ Agreed 2026-10-22 pending spike 02, which passed the same day; released in `v0.0
   client that offers no ALPN still connects, with none. The trade-off: a client that
   offers only protocols the server lacks can no longer connect; HttpArena's clients
   offer what the server speaks.
+
+## QUIC
+
+- **QUIC's handshake is a mode of the Goose server (2026-10-24, task 008).** A QUIC
+  connection's handshake messages go in and out at encryption levels rather than in
+  records, and its packet keys are derived and kept in C with the handshake's other
+  secrets; the program, goose-http's `http.h3`, writes the rest of QUIC. The
+  handshake, the key schedule, and the tickets are the server's own, so QUIC adds a
+  branch where the server sends, reads, or installs keys, not a second handshake.
+  Packet protection is libcrypto's AES-GCM and ChaCha20-Poly1305, with AES-ECB or
+  ChaCha20 for header protection, in place in the program's buffer, a packet a call.
+  Rejected: OpenSSL 3.5's QUIC TLS API under ngtcp2, which would run libssl's handshake
+  beside this one, and need OpenSSL 3.5 where the package needs 3.0; and an AES-GCM of
+  the package's own, as viltrum runs after mbedtls's handshake, until a measurement
+  shows libcrypto's is the cost: viltrum's gain was measured against mbedtls's GCM,
+  not libcrypto's.

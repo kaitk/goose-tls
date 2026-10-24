@@ -180,14 +180,15 @@ fn main() {
     tls::g_tr_update(id, unhex(CLIENT_HELLO));
     tls::g_tr_update(id, unhex(SERVER_HELLO));
     assert(ks_set(id, tls::S_SHARED, unhex(SHARED_SECRET)));
-    check::that("handshake keys", tls::handshake_keys(id, 0x1301, false));
+    var keys = tls::ServerState { suite: 0x1301, .. };
+    check::that("handshake keys", tls::handshake_keys(id, keys, false));
     tls::g_tr_update(id, flight[..fin_at]);
     var ours: u8[>..] = [];
     ours.append(flight[..fin_at]);
     check::that("the server's Finished", tls::server_finished(id, 0x1301, ours) && ours == flight);
     check::that("sealed", tls::send_sealed(id, tls::CT_HANDSHAKE, ours));
     check::that("the encrypted flight", drained(c) == unhex(SERVER_FLIGHT_RECORD));
-    check::that("application keys", tls::application_keys(id, 0x1301));
+    check::that("application keys", tls::application_keys(id, keys));
     var secret: u8[>..] = [];
     tls::g_public(id, tls::S_RESUMPTION, secret);
     check::that("the resumption master secret", secret == unhex(RESUMPTION_MASTER));

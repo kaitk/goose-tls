@@ -75,6 +75,9 @@
 typedef struct {
     uint16_t code;
     EVP_CIPHER *cipher;
+    /* QUIC's header protection (RFC 9001, section 5.4): AES-ECB under the
+       suite's key length, or ChaCha20. */
+    EVP_CIPHER *hp;
     EVP_MD *md;
     size_t key_len, hash_len;
 } suite_t;
@@ -93,19 +96,20 @@ static void alg_init(void) {
     /* The server raises libssl's reasons (tlsg_fail), whose text libssl
        loads only when it starts. */
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS, NULL);
-    static const struct { uint16_t code; const char *cipher, *md; size_t key_len; } defs[3] = {
-        { 0x1301, "AES-128-GCM", "SHA256", 16 },
-        { 0x1302, "AES-256-GCM", "SHA384", 32 },
-        { 0x1303, "ChaCha20-Poly1305", "SHA256", 32 },
+    static const struct { uint16_t code; const char *cipher, *hp, *md; size_t key_len; } defs[3] = {
+        { 0x1301, "AES-128-GCM", "AES-128-ECB", "SHA256", 16 },
+        { 0x1302, "AES-256-GCM", "AES-256-ECB", "SHA384", 32 },
+        { 0x1303, "ChaCha20-Poly1305", "ChaCha20", "SHA256", 32 },
     };
     for (int i = 0; i < 3; i++) {
         suite_t *s = &alg.suites[i];
         s->code = defs[i].code;
         s->cipher = EVP_CIPHER_fetch(NULL, defs[i].cipher, NULL);
+        s->hp = EVP_CIPHER_fetch(NULL, defs[i].hp, NULL);
         s->md = EVP_MD_fetch(NULL, defs[i].md, NULL);
         s->key_len = defs[i].key_len;
         s->hash_len = s->md ? (size_t)EVP_MD_get_size(s->md) : 0;
-        if (!s->cipher || !s->md) return;
+        if (!s->cipher || !s->hp || !s->md) return;
     }
     alg.hmac = EVP_MAC_fetch(NULL, OSSL_MAC_NAME_HMAC, NULL);
     EVP_KEM *kem = EVP_KEM_fetch(NULL, "ML-KEM-768", NULL);
@@ -333,6 +337,9 @@ typedef struct {
     uint16_t held, plain_off, plain_len;
     direction rd, wr;
     handshake *hs;
+    /* A QUIC connection's packet keys and transport parameters (the QUIC
+       section below); NULL for TLS over a stream. */
+    struct quic *q;
     char *sni;
     uint8_t sni_len;
     uint8_t state[STATE_CAP];
@@ -409,9 +416,12 @@ int64_t tlsg_accept(int64_t ctx) {
     return HANDLE(c);
 }
 
+static void quic_free(gconn *c);
+
 void tlsg_conn_free(int64_t h) {
     gconn *c = CONN(h);
     if (!c) return;
+    quic_free(c);
     ctx_release(c->ctx);
     if (c->in.p) OPENSSL_cleanse(c->in.p, c->in.cap);
     q_free(&c->in);
@@ -1060,6 +1070,349 @@ int64_t tlsg_rec_open(int64_t h, int64_t len) {
 
 /* The sequence number a direction is at. */
 int64_t tlsg_rec_seq(int64_t h, int64_t d) { return (int64_t)dir_of(CONN(h), d)->seq; }
+
+/* ---- QUIC (RFC 9001) ----
+
+   A QUIC connection carries the handshake's messages in CRYPTO frames, not
+   records, and protects each packet itself: the keys below, one set per
+   encryption level and direction. Goose builds and parses the packets and
+   decides which keys apply; this file seals, opens, and masks them in place
+   in Goose's buffer, and derives the keys from the secrets it holds.
+
+   Keys, as Goose numbers them: 0 Initial, 2 Handshake, 3 1-RTT in its
+   current phase, 4 1-RTT in the next phase, 5 1-RTT in the phase before
+   (kept for packets that arrive late across a key update). A 1-RTT key
+   update leaves header protection as it was (section 6). */
+
+#define QK_INITIAL 0
+#define QK_HANDSHAKE 2
+#define QK_APP 3
+#define QK_NEXT 4
+#define QK_PREV 5
+#define QK_COUNT 6
+
+typedef struct {
+    EVP_CIPHER_CTX *aead;
+    uint8_t iv[12];
+    uint8_t secret[48];
+} qkey;
+
+typedef struct {
+    const suite_t *suite;
+    qkey rd, wr;
+    EVP_CIPHER_CTX *hp_rd, *hp_wr;
+    uint8_t hp_rd_key[32], hp_wr_key[32];
+} qlevel;
+
+struct quic {
+    qlevel level[QK_COUNT];
+    /* The transport parameters: the server's, which EncryptedExtensions
+       carries, and the client's from its ClientHello. */
+    uint8_t *ours, *peer;
+    size_t ours_len, peer_len;
+};
+
+static void qkey_clear(qkey *k) {
+    EVP_CIPHER_CTX_free(k->aead);
+    OPENSSL_cleanse(k, sizeof *k);
+}
+
+static void qlevel_clear(qlevel *l) {
+    qkey_clear(&l->rd);
+    qkey_clear(&l->wr);
+    EVP_CIPHER_CTX_free(l->hp_rd);
+    EVP_CIPHER_CTX_free(l->hp_wr);
+    OPENSSL_cleanse(l, sizeof *l);
+}
+
+static void quic_free(gconn *c) {
+    if (!c->q) return;
+    for (int i = 0; i < QK_COUNT; i++) qlevel_clear(&c->q->level[i]);
+    OPENSSL_free(c->q->ours);
+    OPENSSL_free(c->q->peer);
+    OPENSSL_clear_free(c->q, sizeof *c->q);
+    c->q = NULL;
+}
+
+/* Makes the connection a QUIC one: 1, or 0 when the allocation fails. */
+uint8_t tlsg_quic_begin(int64_t h) {
+    gconn *c = CONN(h);
+    if (!c) return 0;
+    if (!c->q) c->q = OPENSSL_zalloc(sizeof *c->q);
+    return c->q != NULL;
+}
+
+/* The packet key and IV of a direction from its secret ("quic key", "quic
+   iv"), keyed into its AEAD context. */
+static int qkey_set(EVP_MAC_CTX *m, const suite_t *s, qkey *k, const uint8_t *secret, int enc) {
+    uint8_t key[32];
+    memcpy(k->secret, secret, s->hash_len);
+    int ok = expand_label(m, s, secret, s->hash_len, "quic key", 8, NULL, 0, key, s->key_len) &&
+             expand_label(m, s, secret, s->hash_len, "quic iv", 7, NULL, 0, k->iv, 12);
+    if (ok && !k->aead) ok = (k->aead = EVP_CIPHER_CTX_new()) != NULL;
+    ok = ok && EVP_CipherInit_ex2(k->aead, s->cipher, key, NULL, enc, NULL) == 1;
+    OPENSSL_cleanse(key, sizeof key);
+    return ok;
+}
+
+/* The header protection key ("quic hp") from a secret. AES-ECB keys a
+   context once; ChaCha20 takes its key with each sample's counter and
+   nonce, so the key is kept. */
+static int hp_set(EVP_MAC_CTX *m, const suite_t *s, EVP_CIPHER_CTX **ctx, uint8_t key[32],
+                  const uint8_t *secret) {
+    int ok = expand_label(m, s, secret, s->hash_len, "quic hp", 7, NULL, 0, key, s->key_len);
+    if (ok && !*ctx) ok = (*ctx = EVP_CIPHER_CTX_new()) != NULL;
+    if (ok && s->code != 0x1303)
+        ok = EVP_EncryptInit_ex2(*ctx, s->hp, key, NULL, NULL) == 1 && EVP_CIPHER_CTX_set_padding(*ctx, 0) == 1;
+    return ok;
+}
+
+/* One direction of a level from a secret: its packet keys, and its header
+   protection unless keep_hp (a key update's next phase). */
+static int qlevel_dir(EVP_MAC_CTX *m, const suite_t *s, qlevel *l, int write, const uint8_t *secret,
+                      int keep_hp) {
+    l->suite = s;
+    return qkey_set(m, s, write ? &l->wr : &l->rd, secret, write) &&
+           (keep_hp || hp_set(m, s, write ? &l->hp_wr : &l->hp_rd, write ? l->hp_wr_key : l->hp_rd_key, secret));
+}
+
+/* QUIC version 1's salt for the Initial secrets (section 5.2). */
+static const uint8_t initial_salt[20] = {
+    0x38, 0x76, 0x2c, 0xf7, 0xf5, 0x59, 0x34, 0xb3, 0x4d, 0x17,
+    0x9a, 0xe6, 0xa4, 0xc8, 0x0c, 0xad, 0xcc, 0xbb, 0x7f, 0x0a,
+};
+
+/* The Initial keys each way from the Destination Connection ID of the
+   client's first Initial packet (section 5.2): the server reads under the
+   client's and writes under its own. */
+uint8_t tlsg_quic_initial(int64_t h, tls_bytes dcid) {
+    gconn *c = CONN(h);
+    if (!c || !c->q || !algs() || dcid.len < 0 || dcid.len > 20) return 0;
+    const suite_t *s = suite_of(0x1301);
+    EVP_MAC_CTX *m = mac_new(s);
+    uint8_t initial[32], client[32], server[32];
+    qlevel *l = &c->q->level[QK_INITIAL];
+    int ok = hmac(m, s, initial_salt, sizeof initial_salt, dcid.data, (size_t)dcid.len, NULL, 0, initial, 32) &&
+             expand_label(m, s, initial, 32, "client in", 9, NULL, 0, client, 32) &&
+             expand_label(m, s, initial, 32, "server in", 9, NULL, 0, server, 32) &&
+             qlevel_dir(m, s, l, 0, client, 0) && qlevel_dir(m, s, l, 1, server, 0);
+    OPENSSL_cleanse(initial, sizeof initial);
+    OPENSSL_cleanse(client, sizeof client);
+    OPENSSL_cleanse(server, sizeof server);
+    EVP_MAC_CTX_free(m);
+    return (uint8_t)ok;
+}
+
+/* Gives a level's direction the traffic secret in the handshake's slot[s]
+   (dir 0 reads, 1 writes): the Handshake keys from the handshake traffic
+   secrets, and the 1-RTT keys from the application traffic secrets. */
+uint8_t tlsg_quic_keys(int64_t h, int64_t level, int64_t d, int64_t s) {
+    gconn *c = CONN(h);
+    if (!c->q || (level != QK_HANDSHAKE && level != QK_APP) || !slot_ok(c, s) ||
+        c->hs->slot_len[s] != c->suite->hash_len)
+        return 0;
+    return (uint8_t)qlevel_dir(hs_mac(c), c->suite, &c->q->level[level], d == DIR_WRITE, c->hs->slot[s], 0);
+}
+
+/* The next phase's 1-RTT keys each way from the current ones ("quic ku",
+   section 6.1), unless they are there already. */
+uint8_t tlsg_quic_next(int64_t h) {
+    gconn *c = CONN(h);
+    if (!c->q || !c->q->level[QK_APP].rd.aead) return 0;
+    qlevel *cur = &c->q->level[QK_APP], *next = &c->q->level[QK_NEXT];
+    if (next->rd.aead) return 1;
+    const suite_t *s = cur->suite;
+    EVP_MAC_CTX *m = mac_new(s);
+    uint8_t rd[48], wr[48];
+    int ok = expand_label(m, s, cur->rd.secret, s->hash_len, "quic ku", 7, NULL, 0, rd, s->hash_len) &&
+             expand_label(m, s, cur->wr.secret, s->hash_len, "quic ku", 7, NULL, 0, wr, s->hash_len) &&
+             qlevel_dir(m, s, next, 0, rd, 1) && qlevel_dir(m, s, next, 1, wr, 1);
+    OPENSSL_cleanse(rd, sizeof rd);
+    OPENSSL_cleanse(wr, sizeof wr);
+    EVP_MAC_CTX_free(m);
+    return (uint8_t)ok;
+}
+
+/* Moves 1-RTT to the next phase, which tlsg_quic_next made: the current
+   keys become the previous phase's, for reading late packets only. */
+uint8_t tlsg_quic_rotate(int64_t h) {
+    gconn *c = CONN(h);
+    if (!c->q || !c->q->level[QK_NEXT].rd.aead) return 0;
+    qlevel *cur = &c->q->level[QK_APP], *next = &c->q->level[QK_NEXT], *prev = &c->q->level[QK_PREV];
+    qkey_clear(&prev->rd);
+    qkey_clear(&prev->wr);
+    prev->suite = cur->suite;
+    prev->rd = cur->rd;
+    qkey_clear(&cur->wr);
+    cur->rd = next->rd;
+    cur->wr = next->wr;
+    memset(&next->rd, 0, sizeof next->rd);
+    memset(&next->wr, 0, sizeof next->wr);
+    return 1;
+}
+
+/* Discards a level's keys, or a phase's. */
+void tlsg_quic_drop(int64_t h, int64_t key) {
+    gconn *c = CONN(h);
+    if (c && c->q && key >= 0 && key < QK_COUNT) qlevel_clear(&c->q->level[key]);
+}
+
+/* Whether a level has keys to read with, or with write, to seal with. */
+uint8_t tlsg_quic_has(int64_t h, int64_t key, uint8_t write) {
+    gconn *c = CONN(h);
+    if (!c || !c->q || key < 0 || key >= QK_COUNT) return 0;
+    return (write ? c->q->level[key].wr.aead : c->q->level[key].rd.aead) != NULL;
+}
+
+/* The header protection mask for a 16-byte sample (section 5.4). */
+static int hp_mask(const suite_t *s, EVP_CIPHER_CTX *ctx, const uint8_t key[32], const uint8_t *sample,
+                   uint8_t mask[5]) {
+    uint8_t out[16];
+    int n = 0;
+    int ok;
+    if (s->code == 0x1303) {
+        static const uint8_t zeros[5];
+        ok = EVP_EncryptInit_ex2(ctx, s->hp, key, sample, NULL) == 1 &&
+             EVP_EncryptUpdate(ctx, out, &n, zeros, 5) == 1;
+    } else {
+        ok = EVP_EncryptUpdate(ctx, out, &n, sample, 16) == 1;
+    }
+    memcpy(mask, out, 5);
+    return ok;
+}
+
+static qlevel *level_of(gconn *c, int64_t key) {
+    if (!c || !c->q || key < 0 || key >= QK_COUNT) return NULL;
+    return &c->q->level[key];
+}
+
+/* The header-protection level for a packet key: a key update's phases share
+   1-RTT's. */
+static qlevel *hp_level_of(gconn *c, int64_t key) {
+    return level_of(c, key == QK_NEXT || key == QK_PREV ? QK_APP : key);
+}
+
+static void quic_nonce(const qkey *k, uint64_t pn, uint8_t out[12]) {
+    memcpy(out, k->iv, 12);
+    for (int i = 0; i < 8; i++) out[11 - i] ^= (uint8_t)(pn >> (8 * i));
+}
+
+/* Seals a packet in place (sections 5.3 and 5.4): pkt holds its header,
+   hdr_len bytes ending in the packet number's pn_len bytes, then the
+   payload, then 16 bytes for the tag, which pkt.len counts. Encrypts the
+   payload under the key's write keys with the header as associated data,
+   then masks the first byte's low bits and the packet number. The payload
+   and the packet number together must give the 20 bytes the sample needs
+   (section 5.4.2), which Goose pads for. 0, or -1. */
+int64_t tlsg_quic_seal(int64_t h, int64_t key, tls_buf pkt, int64_t hdr_len, int64_t pn_len, int64_t pn) {
+    gconn *c = CONN(h);
+    qlevel *l = level_of(c, key), *hl = hp_level_of(c, key);
+    if (!l || !hl || !l->wr.aead || !hl->hp_wr || pn_len < 1 || pn_len > 4 || hdr_len < 1 + pn_len ||
+        pkt.len < hdr_len + 16 || hdr_len - pn_len + 4 + 16 > pkt.len)
+        return -1;
+    size_t n = (size_t)(pkt.len - hdr_len - 16);
+    uint8_t *p = pkt.data, iv[12];
+    quic_nonce(&l->wr, (uint64_t)pn, iv);
+    int a = 0, f = 0;
+    int ok = EVP_CipherInit_ex2(l->wr.aead, NULL, NULL, iv, 1, NULL) == 1 &&
+             EVP_EncryptUpdate(l->wr.aead, NULL, &a, p, (int)hdr_len) == 1 &&
+             (n == 0 || EVP_EncryptUpdate(l->wr.aead, p + hdr_len, &a, p + hdr_len, (int)n) == 1) &&
+             EVP_EncryptFinal_ex(l->wr.aead, p + hdr_len + n, &f) == 1 &&
+             EVP_CIPHER_CTX_ctrl(l->wr.aead, EVP_CTRL_AEAD_GET_TAG, 16, p + hdr_len + n) == 1;
+    uint8_t mask[5];
+    ok = ok && hp_mask(hl->suite, hl->hp_wr, hl->hp_wr_key, p + hdr_len - pn_len + 4, mask);
+    if (!ok) return -1;
+    p[0] ^= mask[0] & ((p[0] & 0x80) ? 0x0f : 0x1f);
+    for (int64_t i = 0; i < pn_len; i++) p[hdr_len - pn_len + i] ^= mask[1 + i];
+    return 0;
+}
+
+/* Removes header protection in place from a received packet, all of pkt,
+   whose packet number starts at pn_at (section 5.4.2): the first byte as
+   it was sent, from which Goose reads the packet number's length and the
+   key phase, or -1 when the packet is too short to sample or the level has
+   no keys. */
+int64_t tlsg_quic_unprotect(int64_t h, int64_t key, tls_buf pkt, int64_t pn_at) {
+    gconn *c = CONN(h);
+    qlevel *hl = hp_level_of(c, key);
+    if (!hl || !hl->hp_rd || pn_at < 1 || pn_at + 4 + 16 > pkt.len) return -1;
+    uint8_t *p = pkt.data, mask[5];
+    if (!hp_mask(hl->suite, hl->hp_rd, hl->hp_rd_key, p + pn_at + 4, mask)) return -1;
+    p[0] ^= mask[0] & ((p[0] & 0x80) ? 0x0f : 0x1f);
+    int pn_len = (p[0] & 3) + 1;
+    for (int i = 0; i < pn_len; i++) p[pn_at + i] ^= mask[1 + i];
+    return p[0];
+}
+
+/* Opens a packet in place whose header protection is off: hdr_len bytes of
+   header, then the payload and its tag, to pkt's end, under the key's read
+   keys and the full packet number pn. The plaintext's length, or -1 when it
+   fails to authenticate, and then the payload is wiped. */
+int64_t tlsg_quic_open(int64_t h, int64_t key, tls_buf pkt, int64_t hdr_len, int64_t pn) {
+    gconn *c = CONN(h);
+    qlevel *l = level_of(c, key);
+    if (!l || !l->rd.aead || hdr_len < 1 || pkt.len < hdr_len + 16) return -1;
+    size_t n = (size_t)(pkt.len - hdr_len - 16);
+    uint8_t *p = pkt.data, iv[12];
+    quic_nonce(&l->rd, (uint64_t)pn, iv);
+    int a = 0, f = 0;
+    int ok = EVP_CipherInit_ex2(l->rd.aead, NULL, NULL, iv, 0, NULL) == 1 &&
+             EVP_DecryptUpdate(l->rd.aead, NULL, &a, p, (int)hdr_len) == 1 &&
+             (n == 0 || EVP_DecryptUpdate(l->rd.aead, p + hdr_len, &a, p + hdr_len, (int)n) == 1) &&
+             EVP_CIPHER_CTX_ctrl(l->rd.aead, EVP_CTRL_AEAD_SET_TAG, 16, p + hdr_len + n) == 1 &&
+             EVP_DecryptFinal_ex(l->rd.aead, p + hdr_len + n, &f) == 1;
+    if (!ok) {
+        OPENSSL_cleanse(p + hdr_len, n);
+        return -1;
+    }
+    return (int64_t)n;
+}
+
+/* Sets the server's transport parameters (which 0) or keeps the client's
+   (which 1), as their encoded bytes. */
+uint8_t tlsg_quic_params_set(int64_t h, int64_t which, tls_bytes params) {
+    gconn *c = CONN(h);
+    if (!c || !c->q || params.len < 0) return 0;
+    uint8_t **p = which ? &c->q->peer : &c->q->ours;
+    size_t *n = which ? &c->q->peer_len : &c->q->ours_len;
+    OPENSSL_free(*p);
+    *p = NULL;
+    *n = 0;
+    if (!params.len) return 1;
+    if (!(*p = OPENSSL_memdup(params.data, (size_t)params.len))) return 0;
+    *n = (size_t)params.len;
+    return 1;
+}
+
+void tlsg_quic_params(int64_t h, int64_t which, gs_rref out) {
+    gconn *c = CONN(h);
+    if (!c || !c->q) return;
+    if (which ? c->q->peer_len : c->q->ours_len)
+        gs_bld_append(out, which ? c->q->peer : c->q->ours, (int64_t)(which ? c->q->peer_len : c->q->ours_len));
+}
+
+/* Appends a handshake message the server sends at level: framed for
+   tlsg_quic_take as the level's byte and a 3-byte length. */
+uint8_t tlsg_quic_out(int64_t h, int64_t level, tls_bytes data) {
+    gconn *c = CONN(h);
+    if (data.len < 0 || data.len > 0xffffff) return 0;
+    uint8_t head[4] = { (uint8_t)level, (uint8_t)(data.len >> 16), (uint8_t)(data.len >> 8), (uint8_t)data.len };
+    return q_put(&c->out, head, 4) && q_put(&c->out, data.data, (size_t)data.len);
+}
+
+/* Moves the first message tlsg_quic_out queued onto out: its level, or -1
+   when none is queued. */
+int64_t tlsg_quic_take(int64_t h, gs_rref out) {
+    gconn *c = CONN(h);
+    if (!c || c->out.len < 4) return -1;
+    const uint8_t *p = c->out.p + c->out.off;
+    size_t n = (size_t)p[1] << 16 | (size_t)p[2] << 8 | p[3];
+    if (c->out.len < 4 + n) return -1;
+    int64_t level = p[0];
+    gs_bld_append(out, p + 4, (int64_t)n);
+    q_drop(&c->out, 4 + n);
+    return level;
+}
 
 /* ---- Session tickets ---- */
 
