@@ -183,3 +183,10 @@ tasks/               task tracking (tasks/README.md)
 
 Move the pin in its own commit, with the tests that still hold
 ([development](docs/development.md#move-the-pin)).
+
+## License
+
+Licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT license](LICENSE-MIT), at your option. Unless you state otherwise, any
+contribution you submit for inclusion, as defined in the Apache-2.0 license, is
+licensed the same way, without any additional terms or conditions.
