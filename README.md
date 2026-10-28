@@ -1,9 +1,11 @@
 # goose-tls
 
-TLS for [Goose](https://github.com/aardappel/goose): a TLS 1.3 server written in Goose
-over OpenSSL's libcrypto, and a client over libssl, OpenSSL 3.0 or later, with opaque
-handles and a connection that takes bytes in and gives bytes out, so the program's
-event loop moves the bytes. Its first user is
+TLS for [Goose](https://github.com/aardappel/goose), on OpenSSL 3.0 or later. The
+server's TLS 1.3 protocol and record layer are this package's own, written in Goose,
+and call OpenSSL's libcrypto for every cryptographic primitive; this README calls it
+the Goose server. The client is OpenSSL's libssl. Both use opaque handles, and a
+connection takes bytes in and gives bytes out, so the program's event loop moves the
+bytes. Its first user is
 [goose-http](https://github.com/kaitk/goose-http), which serves HTTPS with it from its
 `http.tls` module.
 
@@ -17,8 +19,9 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 
 ## Features
 
-- **TLS 1.3 server** in Goose over libcrypto: EC P-256 or RSA keys, ALPN, and
-  X25519MLKEM768, X25519, P-256, and P-384. libssl's server is a build option.
+- **TLS 1.3 server**, the Goose server: EC P-256 or RSA keys, ALPN, and
+  X25519MLKEM768, X25519, P-256, and P-384. libssl's server replaces it at build time
+  with `GOOSE_TLS_SERVER=openssl`.
 - **Session tickets**: stateless, with keys turned every two hours.
 - **A context per connection**, chosen at the ClientHello, as for ACME's TLS-ALPN-01.
 - **Certificates replaced while running**; open connections keep theirs.
@@ -27,15 +30,16 @@ How it works is in [architecture](docs/architecture.md), the choices behind it i
 - **TLS 1.3 client** over libssl, which verifies the server.
 - **Keys, signatures, and certificates for ACME.**
 
-Tested against `openssl s_client`, curl, RFC 8448's traces, RFC 9001's packets, and tlsfuzzer on Linux
-(OpenSSL 3.5.5) and macOS (3.6.5 and 4.0.3); the golden tests also pass on Windows
-(3.6.5).
+Tested against `openssl s_client`, curl, RFC 8448's traces, RFC 9001's packets, and
+tlsfuzzer on Linux (OpenSSL 3.5.5) and macOS (3.6.5 and 4.0.3); the golden tests also
+pass on Windows (3.6.5).
 
 ## Performance
 
-The Goose server against libssl's, per server connection, with session tickets on:
+goose-tls's two servers, per server connection, with session tickets on: the Goose
+server, the default, and libssl's, the build option:
 
-| | Goose server | libssl |
+| | Goose server | libssl's server |
 |---|---:|---:|
 | Idle, 4,000 held | 2,917 B | 28,528 B |
 | Handshake in flight, flight drained, 4,000 held | 3,806 B | 58,626 B |
